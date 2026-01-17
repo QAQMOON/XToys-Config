@@ -1,0 +1,241 @@
+[
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemMouth"],
+    "Actions": ["Kiss", "FrenchKiss", "Lick", "Caress", "Grope", "Pull", "Massage", "Rub"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemEar"],
+    "Actions": ["Kiss", "Nibble", "Lick", "Bite", "Caress", "Grope", "Pull", "Massage", "Rub"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemBreast", "ItemNipples", "ItemButt", "ItemMouth", "ItemEar"],
+    "Actions": ["Caress", "Kiss", "Grope", "Pull", "Massage", "Lick", "Rub"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["*"],
+    "Actions": ["Cuddle", "Pet", "RestHead", "Sit", "Kiss", "Lick"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemBreast", "ItemNipples", "ItemMouth"],
+    "Actions": ["RubItem"],
+    "Items": [
+      "SmallVibratingWand",
+      "ElectricToothbrush",
+      "SmallDildo",
+      "LargeDildo",
+      "VibratingWand",
+      "Vibrator"
+    ]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 30,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemBreast", "ItemNipples", "ItemMouth"],
+    "Actions": ["MasturbateItem"],
+    "Items": [
+      "SmallVibratingWand",
+      "ElectricToothbrush",
+      "SmallDildo",
+      "LargeDildo",
+      "VibratingWand",
+      "Vibrator"
+    ]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 45,
+    "DurationMS": 30000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemButt"],
+    "Actions": ["ShockHigh"],
+    "Items": ["ShockPlug"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 30000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemButt"],
+    "Actions": ["ShockMed"],
+    "Items": ["ShockPlug"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemButt"],
+    "Actions": ["ShockLow"],
+    "Items": ["ShockPlug"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 30000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemLegs"],
+    "Actions": ["ShockLow"],
+    "Items": ["电击器"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 30,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemLegs"],
+    "Actions": ["ShockMed"],
+    "Items": ["电击器"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 45,
+    "DurationMS": 30000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva"],
+    "Actions": ["ShockHigh"],
+    "Items": ["ShockDildo"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva"],
+    "Actions": ["ShockMed"],
+    "Items": ["ShockDildo"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva"],
+    "Actions": ["ShockLow"],
+    "Items": ["ShockDildo"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 30000,
+    "RampTimeMS": 9000,
+    "Names": ["ItemVulva"],
+    "Actions": ["ShockMed"],
+    "Items": ["FuturisticVibrator"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 40,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemLegs"],
+    "Actions": ["SpankItem"],
+    "Items": ["Whip"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemTorso", "ItemPelvis", "ItemBreast", "ItemNipples"],
+    "Actions": ["SpankItem"],
+    "Items": ["Whip"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 30,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemArms", "ItemFeet", "ItemBoots"],
+    "Actions": ["SpankItem"],
+    "Items": ["Whip"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 50000,
+    "RampTimeMS": 10000,
+    "Names": ["*"],
+    "Actions": ["SpankItem"],
+    "Items": ["Flogger", "Paddle"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 30,
+    "DurationMS": 50000,
+    "RampTimeMS": 10000,
+    "Names": ["*"],
+    "Actions": ["SpankItem"],
+    "Items": ["WhipPaddle", "Cane", "Crop", "HeartCrop"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 35,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["*"],
+    "Actions": ["ShockItem", "Slap"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 30,
+    "DurationMS": 40000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemBreast", "ItemNipples", "ItemButt"],
+    "Actions": ["Spank", "Kick"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnSelf",
+    "Intensity": 25,
+    "DurationMS": 50000,
+    "RampTimeMS": 10000,
+    "Names": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemBreast", "ItemNipples"],
+    "Actions": ["Masturbate", "MasturbateTongue", "MasturbateFoot", "MasturbateHand", "Grope", "PenetrateSlow", "PenetrateFast"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnOther",
+    "Intensity": 25,
+    "DurationMS": 20000,
+    "RampTimeMS": 9000,
+    "Names": ["*"],
+    "Actions": ["PenetrateSlow"],
+    "Items": ["*"]
+  },
+  {
+    "Type": "OnOther",
+    "Intensity": 30,
+    "DurationMS": 40000,
+    "RampTimeMS": 9000,
+    "Names": ["*"],
+    "Actions": ["PenetrateFast"],
+    "Items": ["*"]
+  }
+]
