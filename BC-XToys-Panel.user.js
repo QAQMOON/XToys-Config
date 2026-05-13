@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      2.5.0
-// @description  Bondage Club 遥控玩具面板：配对控制+游戏联动+远程控制+聊天广播+权限白名单
+// @version      2.8.0
+// @description  Bondage Club 遥控面板：波形+配对+小游戏+剧本+自动响应+广播+白名单
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
 // @match        https://www.bondageprojects.elementfx.com/*
@@ -17,7 +17,7 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VER = '2.5.0';
+const VER = '2.8.0';
 const FULL = 'BC XToys Control Panel';
 const SHORT = 'BC-XToys-Panel';
 const SK = 'BC_XToys_Panel_v2';
@@ -25,7 +25,15 @@ const IG_CT = new Set(['BCXMsg','BCEMsg','Preference','Wardrobe','SlowLeaveAttem
 const IG_TP = new Set(['Status','Hidden']);
 const MIN_SK = 500;
 const SK_NM = ['ShockLow','ShockMed','ShockHigh'];
-const REMOTE_COOLDOWN = 3000; // 远程命令冷却ms
+const REMOTE_COOLDOWN = 3000;
+
+// 波形/游戏/剧本 状态
+var waveRunning=null, waveTimerId=null;       // {type,min,max,speed,step}
+var scriptRunning=null, scriptTimerId=null;   // {steps:[{time,level},...],index}
+var autoResponseMap={};  // {actionName: {type, intensity, duration}}
+var voteBox={};          // {voterName: intensity}
+var mineMap={};          // {callerName: {mines:[1,2,3], found:[]}}
+var guessTarget=0;       // 猜谜目标值
 
 // ==================== 持久化 ====================
 function loadS() { try { return JSON.parse(localStorage.getItem(SK)) || {}; } catch(e) { return {}; } }
@@ -323,6 +331,53 @@ function createUI(){
                 '<input id="bcp-pair-limit" type="range" min="10" max="100" value="100" style="flex:1;height:4px;-webkit-appearance:none;appearance:none;background:#333;border-radius:2px;outline:none;accent-color:#ff9800;cursor:pointer;">'+
                 '<span id="bcp-pair-limit-val" style="font-size:9px;color:#ff9800;">100%</span></div>'+
         '</div>'+
+        // 波形控制
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
+                '<span style="font-size:10px;color:#4fc3f7;">🌊 波形</span>'+
+                '<span id="bcp-wave-status" style="font-size:9px;color:#888;">停止</span></div>'+
+            '<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px;">'+
+                '<button class="bcp-wave-btn" data-w="sine" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">正弦</button>'+
+                '<button class="bcp-wave-btn" data-w="square" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">方波</button>'+
+                '<button class="bcp-wave-btn" data-w="heartbeat" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">心跳</button>'+
+                '<button class="bcp-wave-btn" data-w="tease" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">挑逗</button>'+
+                '<button class="bcp-wave-btn" data-w="crescendo" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">渐强</button>'+
+                '<button class="bcp-wave-btn" data-w="turbulence" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">湍流</button>'+
+                '<button id="bcp-wave-stop" style="padding:3px 6px;background:#333;border:1px solid #c62828;border-radius:3px;color:#ff5252;font-size:8px;cursor:pointer;">停止</button></div>'+
+            '<div style="display:flex;gap:4px;align-items:center;">'+
+                '<span style="font-size:8px;color:#888;">范围</span>'+
+                '<input id="bcp-wave-min" type="number" min="0" max="90" value="10" style="width:38px;padding:2px 4px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:9px;">'+
+                '<span style="font-size:8px;color:#888;">-</span>'+
+                '<input id="bcp-wave-max" type="number" min="10" max="100" value="80" style="width:38px;padding:2px 4px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:9px;">'+
+                '<span style="font-size:8px;color:#888;">%</span>'+
+                '<span style="font-size:8px;color:#888;">速度</span>'+
+                '<select id="bcp-wave-spd" style="padding:2px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:8px;">'+
+                    '<option value="1000">快</option><option value="2000" selected>中</option><option value="4000">慢</option><option value="8000">缓</option></select></div>'+
+        '</div>'+
+        // 游戏按钮
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="font-size:10px;color:#ffd54f;margin-bottom:4px;">🎲 聊天游戏</div>'+
+            '<div style="display:flex;gap:3px;flex-wrap:wrap;">'+
+                '<button class="bcp-game-btn" data-g="roulette" style="padding:3px 6px;background:#2a1010;border:1px solid #c62828;border-radius:3px;color:#ff5252;font-size:8px;cursor:pointer;">🎰 轮盘</button>'+
+                '<button class="bcp-game-btn" data-g="dice" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">🎲 骰子</button>'+
+                '<button class="bcp-game-btn" data-g="guess" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">❓ 猜谜</button>'+
+                '<button class="bcp-game-btn" data-g="mine" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">💣 地雷</button>'+
+                '<button class="bcp-game-btn" data-g="vote" style="padding:3px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#aaa;font-size:8px;cursor:pointer;">🗳️ 投票</button></div>'+
+        '</div>'+
+        // 剧本控制
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="font-size:10px;color:#ce93d8;margin-bottom:4px;">📜 剧本/定时</div>'+
+            '<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">'+
+                '<span style="font-size:8px;color:#888;">目标</span>'+
+                '<input id="bcp-script-target" type="number" min="0" max="100" value="80" style="width:40px;padding:2px 4px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:9px;">'+
+                '<span style="font-size:8px;color:#888;">% 时长</span>'+
+                '<input id="bcp-script-sec" type="number" min="5" max="300" value="30" style="width:38px;padding:2px 4px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:9px;">'+
+                '<span style="font-size:8px;color:#888;">秒</span></div>'+
+            '<div style="display:flex;gap:4px;">'+
+                '<button id="bcp-ramp-go" style="flex:1;padding:4px;background:#6a1b9a;border:none;border-radius:4px;color:#fff;font-size:9px;cursor:pointer;">▶ 渐强</button>'+
+                '<button id="bcp-timer-go" style="flex:1;padding:4px;background:#4527a0;border:none;border-radius:4px;color:#fff;font-size:9px;cursor:pointer;">⏱ 定时器</button>'+
+                '<button id="bcp-script-stop" style="flex:1;padding:4px;background:#333;border:1px solid #555;border-radius:4px;color:#ff5252;font-size:9px;cursor:pointer;">停止</button></div>'+
+        '</div>'+
         // 最近事件
         '<div><div style="font-size:10px;color:#888;margin-bottom:3px;">事件记录</div>'+
             '<div id="bcp-log" style="height:100px;overflow-y:auto;font-size:9px;color:#999;background:#0c0c14;border-radius:4px;padding:5px;border:1px solid #222;">等待游戏事件...</div></div>'+
@@ -384,6 +439,31 @@ function createUI(){
         }
     };
 
+    // 波形按钮
+    var wbs=document.getElementsByClassName('bcp-wave-btn');
+    for(var i=0;i<wbs.length;i++){ wbs[i].onclick=function(){
+        var wt=this.getAttribute('data-w'), mn=parseInt(document.getElementById('bcp-wave-min').value)||10, mx=parseInt(document.getElementById('bcp-wave-max').value)||80, sp=parseInt(document.getElementById('bcp-wave-spd').value)||2000;
+        startWave(wt,mn,mx,sp);
+        var ws=document.getElementById('bcp-wave-status'); if(ws){ ws.textContent=WAVES[wt]?WAVES[wt].name:'运行中'; ws.style.color='#4fc3f7'; }
+    }; }
+    document.getElementById('bcp-wave-stop').onclick=function(){ stopWave(); var ws=document.getElementById('bcp-wave-status'); if(ws){ ws.textContent='停止'; ws.style.color='#888'; } };
+
+    // 游戏按钮
+    var gbs=document.getElementsByClassName('bcp-game-btn');
+    for(var i=0;i<gbs.length;i++){ gbs[i].onclick=function(){
+        var gt=this.getAttribute('data-g');
+        if(gt==='roulette'){ gameRoulette(Player.Name); }
+        else if(gt==='dice'){ gameDice(Player.Name,2); }
+        else if(gt==='guess'){ var g=parseInt(prompt('猜 1-100 的数字:')); if(g>=1&&g<=100)gameGuess(Player.Name,g); }
+        else if(gt==='mine'){ var m=parseInt(prompt('选格子 1-10:')); if(m>=1&&m<=10)gameMine(Player.Name,m); }
+        else if(gt==='vote'){ var v=parseInt(prompt('投票强度 0-100:')); if(v>=0&&v<=100)gameVote(Player.Name,v); }
+    }; }
+
+    // 剧本按钮
+    document.getElementById('bcp-ramp-go').onclick=function(){ var t=parseInt(document.getElementById('bcp-script-target').value)||80, s=parseInt(document.getElementById('bcp-script-sec').value)||30; scriptRamp(t,s); };
+    document.getElementById('bcp-timer-go').onclick=function(){ var t=parseInt(document.getElementById('bcp-script-target').value)||80, s=parseInt(document.getElementById('bcp-script-sec').value)||30; scriptTimer(Math.ceil(s/60)||1,t); };
+    document.getElementById('bcp-script-stop').onclick=function(){ if(scriptTimerId)clearInterval(scriptTimerId); scriptTimerId=null; ChatRoomSendLocal('[📜] 剧本已停止',5000); };
+
     // preset buttons
     var pbs=document.getElementsByClassName('bcp-preset');
     for(var i=0;i<pbs.length;i++){ pbs[i].onclick=function(){
@@ -443,6 +523,168 @@ function updUI(){
     }
     log.innerHTML=h;
 }
+
+// ==================== 波形引擎 ====================
+const WAVES = {
+    sine: {name:'正弦波 🌊', desc:'平滑呼吸式起伏', fn:function(t,min,max,spd){ var p=Math.sin(t*spd/1000*Math.PI*2); return min+(max-min)*(p+1)/2; }},
+    square: {name:'方波 ⏹️', desc:'开关交替脉冲', fn:function(t,min,max,spd){ return (Math.floor(t/spd*1000)%2===0)?max:min; }},
+    triangle: {name:'三角波 📐', desc:'直线升降', fn:function(t,min,max,spd){ var p=(t/spd*1000)%2000/1000; return min+(max-min)*(p<1?p:2-p); }},
+    sawtooth: {name:'锯齿波 🪚', desc:'慢升瞬降', fn:function(t,min,max,spd){ return min+(max-min)*((t/spd*1000)%1000/1000); }},
+    heartbeat: {name:'心跳 💓', desc:'咚咚双脉冲', fn:function(t,min,max,spd){ var p=t/spd*1000%2000; if(p<200)return max; if(p<400)return min; if(p<600)return max; return min; }},
+    tease: {name:'挑逗 😈', desc:'反复边缘', fn:function(t,min,max,spd){ var p=Math.sin(t*spd/500*Math.PI*2); var v=min+(max-min)*(p+1)/2; return v>max*0.8?min+Math.random()*20:v; }},
+    turbulence: {name:'湍流 🌪️', desc:'随机漫步', fn:function(t,min,max,spd){ var r=Math.random(); var mid=(max+min)/2; return mid+(r-0.5)*(max-min); }},
+    crescendo: {name:'渐强 🎵', desc:'阶梯增强', fn:function(t,min,max,spd){ var cyc=t/spd*1000%1000/1000; return min+(max-min)*Math.pow(cyc,2); }}
+};
+
+function startWave(type,min,max,speed){
+    stopWave();
+    var w=WAVES[type]; if(!w)return;
+    var t0=Date.now();
+    waveRunning={type:type,min:min,max:max,speed:speed||2000,start:t0};
+    waveTimerId=setInterval(function(){
+        if(!waveRunning)return;
+        var elapsed=Date.now()-waveRunning.start;
+        var v=Math.round(w.fn(elapsed,waveRunning.min,waveRunning.max,waveRunning.speed));
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','Wave_'+type]]);
+        curIntensity=v; toyMap['wave']=v;
+        updUI(); maybeBroadcast();
+    },200);
+    ChatRoomSendLocal('[🌊] 启动波形: '+w.name+' 范围 '+min+'%-'+max+'%',8000);
+    addLog('Wave:'+w.name,'wave',(max+min)/2,'');
+}
+
+function stopWave(){
+    if(waveTimerId)clearInterval(waveTimerId); waveTimerId=null;
+    if(waveRunning){ ChatRoomSendLocal('[🌊] 波形已停止',5000); }
+    waveRunning=null;
+}
+
+function sendWaveIntensity(v){
+    WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','WaveManual']]);
+    curIntensity=v; toyMap['wave']=v; updUI(); maybeBroadcast();
+}
+
+// ==================== 聊天小游戏 ====================
+function gameRoulette(sourceName){
+    var slots=[10,20,30,50,70,100]; var r=Math.floor(Math.random()*slots.length);
+    var v=slots[r]; var msgs=['转...','转...','转...'];
+    ChatRoomSendLocal('[🎰] '+sourceName+' 玩俄罗斯轮盘!',5000);
+    var idx=0;
+    var tid=setInterval(function(){
+        if(idx<msgs.length){ ChatRoomSendLocal('[🎰] '+msgs[idx],2000); idx++; }
+        else { clearInterval(tid); ChatRoomSendLocal('[🎰] 💥 中了! '+v+'%!',8000);
+            WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','Roulette']]);
+            curIntensity=v; toyMap['game']=v; addLog('Roulette','game',v,sourceName); updUI(); maybeBroadcast(); }
+    },800);
+}
+
+function gameDice(sourceName, count){
+    count=Math.max(1,Math.min(5,count||1));
+    var total=0, rolls=[];
+    for(var i=0;i<count;i++){ var r=Math.floor(Math.random()*6)+1; total+=r; rolls.push(r); }
+    var v=Math.min(100,total*(100/(count*6/2))); v=Math.round(v/5)*5;
+    ChatRoomSendLocal('[🎲] '+sourceName+' 掷 '+count+' 个骰子: '+rolls.join('+')+'='+total+' → '+v+'%',10000);
+    WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','Dice']]);
+    curIntensity=v; toyMap['game']=v; addLog('Dice','game',v,sourceName); updUI(); maybeBroadcast();
+}
+
+function gameGuess(sourceName, guess){
+    if(guessTarget===0) guessTarget=Math.floor(Math.random()*90)+10;
+    if(guess===guessTarget){
+        ChatRoomSendLocal('[❓] '+sourceName+' 猜中了! '+guessTarget+'% → 归零!',8000);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',0],['itemName','GuessWin']]);
+        curIntensity=0; toyMap={}; addLog('GuessWin','game',0,sourceName); guessTarget=0;
+    } else {
+        var hint=guess>guessTarget?'高了':'低了';
+        curIntensity=Math.min(100,curIntensity+10);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(curIntensity/20)],['itemName','GuessFail']]);
+        ChatRoomSendLocal('[❓] '+sourceName+' 猜 '+guess+' → '+hint+'! 强度 +10% → '+curIntensity+'%',8000);
+        addLog('Guess:'+guess,'game',curIntensity,sourceName);
+    }
+    updUI(); maybeBroadcast();
+}
+
+function gameMine(sourceName, pick){
+    var key=sourceName.toLowerCase();
+    if(!mineMap[key]) mineMap[key]={mines:[],found:[]};
+    var m=mineMap[key];
+    if(m.mines.length===0){
+        var pool=[]; for(var i=1;i<=10;i++)pool.push(i);
+        for(var i=0;i<3;i++){ var ri=Math.floor(Math.random()*pool.length); m.mines.push(pool.splice(ri,1)[0]); }
+        m.found=[];
+    }
+    pick=Math.max(1,Math.min(10,pick));
+    var already=m.found.indexOf(pick)>=0;
+    if(!already)m.found.push(pick);
+    if(m.mines.indexOf(pick)>=0){
+        ChatRoomSendLocal('[💣] '+sourceName+' 踩雷! 💥 100%!',8000);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',5],['itemName','MineExplode']]);
+        curIntensity=100; toyMap['game']=100; addLog('MineBoom','game',100,sourceName);
+        delete mineMap[key];
+    } else {
+        var safe=10-m.found.length;
+        ChatRoomSendLocal('[💣] '+sourceName+' 格子 '+pick+' 安全 ('+safe+'个剩余)',5000);
+        addLog('MineSafe:'+pick,'game',curIntensity,sourceName);
+    }
+    updUI(); maybeBroadcast();
+}
+
+function gameVote(sourceName, intensity){
+    voteBox[sourceName]=Math.max(0,Math.min(100,intensity));
+    var sum=0,cnt=0; var ks=Object.keys(voteBox);
+    for(var i=0;i<ks.length;i++){ sum+=voteBox[ks[i]]; cnt++; }
+    if(cnt>=2){ var avg=Math.round(sum/cnt);
+        ChatRoomSendLocal('[🗳️] 投票: '+cnt+'人 平均 '+avg+'%',5000);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(avg/20)],['itemName','Vote']]);
+        curIntensity=avg; toyMap['game']=avg; addLog('Vote avg','game',avg,'');
+        updUI(); maybeBroadcast();
+    }
+    // 30秒后重置
+    setTimeout(function(){ voteBox={}; },30000);
+}
+
+// ==================== 定时/剧本模式 ====================
+function scriptRamp(targetPct, durationSec){
+    if(scriptTimerId)clearInterval(scriptTimerId);
+    var startPct=curIntensity, steps=Math.round(durationSec*5), step=0;
+    ChatRoomSendLocal('[📜] 剧本: '+startPct+'% → '+targetPct+'% 用时 '+durationSec+'秒',8000);
+    scriptTimerId=setInterval(function(){
+        step++; var p=Math.min(1,step/steps);
+        var v=Math.round(startPct+(targetPct-startPct)*p);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','Script']]);
+        curIntensity=v; toyMap['script']=v; updUI(); maybeBroadcast();
+        if(step>=steps){ clearInterval(scriptTimerId); scriptTimerId=null; ChatRoomSendLocal('[📜] 剧本完成: '+targetPct+'%',5000); }
+    },200);
+}
+
+function scriptTimer(minutes, targetPct){
+    ChatRoomSendLocal('[⏱️] 定时器: '+minutes+'分钟后 → '+targetPct+'%',10000);
+    setTimeout(function(){
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(targetPct/20)],['itemName','Timer']]);
+        curIntensity=targetPct; toyMap['timer']=targetPct;
+        addLog('Timer','timer',targetPct,''); updUI(); maybeBroadcast();
+        ChatRoomSendLocal('[⏱️] 时间到! 强度 → '+targetPct+'%',8000);
+    },minutes*60000);
+}
+
+// ==================== 自动强度响应 ====================
+function checkAutoResponse(actionName, bodyPart){
+    var keys=Object.keys(autoResponseMap);
+    for(var i=0;i<keys.length;i++){
+        var rule=autoResponseMap[keys[i]];
+        if(rule.actions.indexOf(actionName)>=0 && (rule.parts.indexOf(bodyPart)>=0 || rule.parts.indexOf('*')>=0)){
+            if(rule.wave) startWave(rule.wave, rule.min||10, rule.max||curIntensity, rule.speed||2000);
+            else { WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(rule.intensity/20)],['itemName','AutoResp']]);
+                curIntensity=rule.intensity; toyMap['autoResp']=rule.intensity; } updUI(); maybeBroadcast(); addLog('AutoResp:'+actionName,bodyPart,rule.intensity||curIntensity,'');
+            return;
+        }
+    }
+}
+
+// 预设自动响应规则
+autoResponseMap['orgasm']={actions:['Orgasm','RuinedOrgasm','EdgeExplode'],parts:['*'],wave:'turbulence',min:60,max:100,speed:3000};
+autoResponseMap['spankHard']={actions:['Spank','SpankItem','Slap','Kick'],parts:['ItemButt','ItemVulva'],intensity:70};
+autoResponseMap['kissDeep']={actions:['FrenchKiss','Kiss','Lick','Nibble','Bite'],parts:['ItemMouth','ItemEar'],intensity:40};
 
 // ==================== 聊天命令解析 ====================
 function handleChatCommands(data){
@@ -530,6 +772,48 @@ function handleChatCommands(data){
         return true;
     }
 
+    // /toy wave — 波形控制
+    if(sub==='wave'){
+        if(parts.length<3){ var wl=Object.keys(WAVES).map(function(k){ return WAVES[k].name+' (/toy wave '+k+')'; }).join(', ');
+            ChatRoomSendLocal('[🌊] 波形: '+wl+'\n用法: /toy wave <类型> <最小> <最大> [速度ms]\n/toy wave stop 停止',15000); return true; }
+        var wact=parts[2].toLowerCase();
+        if(wact==='stop'){ stopWave(); return true; }
+        if(WAVES[wact]){ var mn=parseInt(parts[3])||10, mx=parseInt(parts[4])||80, sp=parseInt(parts[5])||2000; startWave(wact,Math.max(0,mn),Math.min(100,mx),sp); return true; }
+        return true;
+    }
+
+    // /toy roulette — 轮盘
+    if(sub==='roulette'){ gameRoulette(sourceName); return true; }
+
+    // /toy dice [N] — 骰子
+    if(sub==='dice'){ var dc=parseInt(parts[2])||1; gameDice(sourceName,dc); return true; }
+
+    // /toy guess <number> — 猜谜
+    if(sub==='guess'&&parts.length>=3){ var gs=parseInt(parts[2]); if(gs>=1&&gs<=100)gameGuess(sourceName,gs); return true; }
+
+    // /toy mine <1-10> — 地雷
+    if(sub==='mine'&&parts.length>=3){ var pk=parseInt(parts[2]); if(pk>=1&&pk<=10)gameMine(sourceName,pk); return true; }
+
+    // /toy vote <0-100> — 投票
+    if(sub==='vote'&&parts.length>=3){ var vt=parseInt(parts[2]); gameVote(sourceName,vt); return true; }
+
+    // /toy ramp <目标> [秒数] — 渐强剧本
+    if(sub==='ramp'&&parts.length>=3){ var tp=parseInt(parts[2]), ds=parseInt(parts[3])||30; scriptRamp(Math.max(0,Math.min(100,tp)),ds); return true; }
+
+    // /toy timer <分钟> [强度] — 定时器
+    if(sub==='timer'&&parts.length>=3){ var tm=parseInt(parts[2]), ti=parseInt(parts[3])||80; scriptTimer(Math.max(1,tm),Math.max(0,Math.min(100,ti))); return true; }
+
+    // /toy auto — 自动响应规则管理
+    if(sub==='auto'){
+        if(parts.length<3){ var ar=Object.keys(autoResponseMap).join(', ');
+            ChatRoomSendLocal('[🤖] 自动响应规则: '+ar+'\n/toy auto add <名> <强度> <动作1,动作2> <部位1,部位2>\n/toy auto del <名>\n/toy auto off 关闭',15000); return true; }
+        if(parts[2]==='off'){ autoResponseMap={}; ChatRoomSendLocal('[🤖] 自动响应已全部关闭',5000); return true; }
+        if(parts[2]==='del'&&parts.length>=4){ delete autoResponseMap[parts[3].toLowerCase()]; ChatRoomSendLocal('[🤖] 已删除规则: '+parts[3],5000); return true; }
+        if(parts[2]==='add'&&parts.length>=6){ var rn=parts[3].toLowerCase(), ri=parseInt(parts[4]), ra=parts[5].split(','), rp=parts.length>=7?parts[6].split(','):['*'];
+            autoResponseMap[rn]={actions:ra,parts:rp,intensity:Math.max(0,Math.min(100,ri))}; ChatRoomSendLocal('[🤖] 已添加规则: '+rn+' 强度'+ri+'% 动作:'+ra.join(',')+' 部位:'+rp.join(','),8000); return true; }
+        return true;
+    }
+
     // /toy broadcast on/off
     if(sub==='broadcast'&&parts.length>=3){
         broadcastOn = parts[2].toLowerCase()==='on';
@@ -567,7 +851,7 @@ async function main(){
         var g=sDict(data,'FocusAssetGroup','FocusGroupName'),n=sDict(data,'ActivityName'),a=sDict(data,'ActivityAsset','AssetName');
         var t=sDict(data,'TargetCharacter','MemberNumber'),s=sDict(data,'SourceCharacter','MemberNumber');
         if(!g||!n)return;
-        if(t===Player.MemberNumber){ WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); addLog(n,g,30,a); }
+        if(t===Player.MemberNumber){ WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); addLog(n,g,30,a); checkAutoResponse(n,g); }
         else if(s===Player.MemberNumber){ WS.sendFA('activityOnOtherEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); }
     }
 
