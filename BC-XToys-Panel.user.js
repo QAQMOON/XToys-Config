@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      1.1.0
-// @description  Bondage Club 玩具控制面板 — 游戏事件联动 + 手动控制 + 浮动UI
+// @version      2.0.0
+// @description  Bondage Club 遥控玩具面板：游戏联动+远程控制+聊天广播+权限白名单
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
 // @match        https://www.bondageprojects.elementfx.com/*
@@ -17,628 +17,477 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VERSION = '1.1.0';
-const FULL_NAME = 'Bondage Club XToys Control Panel';
-const SHORT_NAME = 'BC-XToys-Panel';
-const STORAGE_KEY = 'BC_XToys_Panel_v1';
-const IGNORE_CONTENTS = new Set(['BCXMsg', 'BCEMsg', 'Preference', 'Wardrobe', 'SlowLeaveAttempt', 'ServerUpdateRoom', 'bctMsg']);
-const IGNORE_TYPES = new Set(['Status', 'Hidden']);
-const MIN_SHOCK_MS = 500;
-const SHOCK_NAMES = ['ShockLow', 'ShockMed', 'ShockHigh'];
-
-var defaultShockLevel = 1;
-var actionHistory = [];
-var currentMaxIntensity = 0;
-var toyIntensityMap = {};
+const VER = '2.0.0';
+const FULL = 'BC XToys Control Panel';
+const SHORT = 'BC-XToys-Panel';
+const SK = 'BC_XToys_Panel_v2';
+const IG_CT = new Set(['BCXMsg','BCEMsg','Preference','Wardrobe','SlowLeaveAttempt','ServerUpdateRoom','bctMsg']);
+const IG_TP = new Set(['Status','Hidden']);
+const MIN_SK = 500;
+const SK_NM = ['ShockLow','ShockMed','ShockHigh'];
+const REMOTE_COOLDOWN = 3000; // 远程命令冷却ms
 
 // ==================== 持久化 ====================
-function loadState() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch(e) { return {}; }
-}
-function saveState(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+function loadS() { try { return JSON.parse(localStorage.getItem(SK)) || {}; } catch(e) { return {}; } }
+function saveS(s) { localStorage.setItem(SK, JSON.stringify(s)); }
 
-// ==================== WebSocket 管理器 (精确复刻参考实现) ====================
+// ==================== 全局状态 ====================
+var actLog = [], curIntensity = 0, toyMap = {};
+var remoteAllow = true, broadcastOn = true;
+var whitelist = [];   // 允许控制的白名单玩家名
+var lastRemoteTime = {};
+var curControlledBy = null; // 当前谁在控制
+
+// ==================== WebSocket Manager ====================
 const WS = {
-    sockets: new Map(),
-    sendMessages: true,
-    autoReconnectMap: new Map(),
-    uiCallback: null,
-
-    getSaved() {
-        var urls = JSON.parse(localStorage.getItem(SHORT_NAME + ' Websockets'));
-        return Array.isArray(urls) ? urls : [];
+    sockets: new Map(), sendMsgs: true, autoRecMap: new Map(), uiCb: null,
+    getSaved() { var u = JSON.parse(localStorage.getItem(SHORT+' Websockets')); return Array.isArray(u)?u:[]; },
+    save() { var u = JSON.stringify(Array.from(this.sockets.keys())); if(u!==localStorage.getItem(SHORT+' Websockets')){ localStorage.setItem(SHORT+' Websockets',u); if(this.uiCb)this.uiCb(); } },
+    setAutoC(v) { localStorage.setItem(SHORT+' AutoConnect', JSON.stringify(v===true)); },
+    getAutoC() { return JSON.parse(localStorage.getItem(SHORT+' AutoConnect'))===true; },
+    setAutoR(v) { localStorage.setItem(SHORT+' AutoReconnect', JSON.stringify(v===true)); },
+    getAutoR() { return JSON.parse(localStorage.getItem(SHORT+' AutoReconnect'))===true; },
+    connect(url) {
+        if(!url)return; if(this.hasConn(url)){ log('Already connected: '+url); return; }
+        var w=new WebSocket(url); this.sockets.set(url,w); var s=this;
+        w.onopen=function(){ log('Connected: '+w.url); if(s.getAutoC())s.save(); if(s.getAutoR())s.autoRecMap.set(url,3); if(s.uiCb)s.uiCb(); };
+        w.onmessage=function(e){ log('RX: '+e.data); };
+        w.onclose=function(){ log('Disconnected: '+url); s.close(url);
+            if(s.getAutoR()){ var a=s.autoRecMap.get(url); if(a>0){ setTimeout(function(){ s.autoRecMap.set(url,a-1); s.connect(url); },100); } else s.autoRecMap.delete(url); }
+            if(s.uiCb)s.uiCb(); };
+        w.onerror=function(){ if(s.uiCb)s.uiCb(); };
     },
-    save() {
-        var urls = JSON.stringify(Array.from(this.sockets.keys()));
-        if (urls !== localStorage.getItem(SHORT_NAME + ' Websockets')) {
-            console.log(SHORT_NAME + ': Saving urls:', urls);
-            localStorage.setItem(SHORT_NAME + ' Websockets', urls);
-            if (this.uiCallback) this.uiCallback();
-        }
+    connectSaved() { if(!this.getAutoC())return; var u=this.getSaved(); for(var i=0;i<u.length;i++)this.connect(u[i]); },
+    send(t) { if(this.sockets.size===0||!this.sendMsgs)return; for(var s of this.sockets.values()){ if(s.readyState!==1)continue; s.send(t); } log('TX: '+t); },
+    sendFA(action, args) {
+        if(!this.hasAnyConn()){ log('No connection'); return; }
+        var m='{"action":"'+action+'"';
+        if(args&&Array.isArray(args)){ for(var i=0;i<args.length;i++){ if(!Array.isArray(args[i])||args[i].length!==2||typeof args[i][0]!=='string')continue;
+            m+=', "'+args[i][0]+'": '; var v=args[i][1];
+            if(v===null){ m+='"none"'; } else if(typeof v==='string'){ m+='"'+v+'"'; } else { m+=v; } } }
+        m+='}'; this.send(m);
+        if(this.onGEvt)this.onGEvt(action,args);
     },
-
-    setAutoConnect(v) { localStorage.setItem(SHORT_NAME + ' AutoConnect', JSON.stringify(v === true)); },
-    getAutoConnect() { var s = JSON.parse(localStorage.getItem(SHORT_NAME + ' AutoConnect')); return s === true; },
-
-    setAutoReconnect(v) { localStorage.setItem(SHORT_NAME + ' AutoReconnect', JSON.stringify(v === true)); },
-    getAutoReconnect() { var s = JSON.parse(localStorage.getItem(SHORT_NAME + ' AutoReconnect')); return s === true; },
-
-    connect: function(url) {
-        if (!url) return;
-        if (this.hasConnection(url)) {
-            console.log(SHORT_NAME + ': Already connected to', url);
-            return;
-        }
-        var ws = new WebSocket(url);
-        this.sockets.set(url, ws);
-        var self = this;
-
-        ws.onopen = function() {
-            console.log(SHORT_NAME + ': Connected to', ws.url);
-            if (self.getAutoConnect()) self.save();
-            if (self.getAutoReconnect()) self.autoReconnectMap.set(url, 3);
-            if (self.uiCallback) self.uiCallback();
-        };
-        ws.onmessage = function(e) {
-            console.log(SHORT_NAME + ': RX:', e.data);
-        };
-        ws.onclose = function() {
-            console.log(SHORT_NAME + ': Disconnected from', url);
-            self.close(url);
-            if (self.getAutoReconnect()) {
-                var att = self.autoReconnectMap.get(url);
-                if (att > 0) {
-                    setTimeout(function() { self.autoReconnectMap.set(url, att - 1); self.connect(url); }, 100);
-                } else {
-                    self.autoReconnectMap.delete(url);
-                }
-            }
-            if (self.uiCallback) self.uiCallback();
-        };
-        ws.onerror = function() {
-            if (self.uiCallback) self.uiCallback();
-        };
-    },
-
-    connectSaved: function() {
-        if (!this.getAutoConnect()) return;
-        console.log(SHORT_NAME + ': Auto-connecting saved URLs...');
-        var urls = this.getSaved();
-        for (var i = 0; i < urls.length; i++) this.connect(urls[i]);
-    },
-
-    send: function(text) {
-        if (this.sockets.size === 0 || !this.sendMessages) return;
-        for (var s of this.sockets.values()) {
-            if (s.readyState !== 1) continue;
-            s.send(text);
-        }
-        console.log(SHORT_NAME + ': TX:', text);
-    },
-
-    sendFormattedArgs: function(actionName, args) {
-        if (!this.hasAnyConnection()) { console.log(SHORT_NAME + ': No connection, cannot send'); return; }
-        var msg = '{"action": "' + actionName + '"';
-        if (args !== null && Array.isArray(args)) {
-            for (var i = 0; i < args.length; i++) {
-                if (!Array.isArray(args[i]) || args[i].length !== 2 || typeof args[i][0] !== 'string') continue;
-                msg += ', "' + args[i][0] + '": ';
-                if (args[i][1] === null) { msg += '"none"'; }
-                else if (typeof args[i][1] === 'string') { msg += '"' + args[i][1] + '"'; }
-                else { msg += args[i][1]; }
-            }
-        }
-        msg += '}';
-        this.send(msg);
-        // UI notification
-        if (this.onGameEvent) this.onGameEvent(actionName, args);
-    },
-
-    hasConnection: function(url) { var s = this.sockets.get(url); return s ? s.readyState === 1 : false; },
-    hasAnyConnection: function() {
-        var ks = Array.from(this.sockets.keys());
-        for (var i = 0; i < ks.length; i++) { if (this.hasConnection(ks[i])) return true; }
-        return false;
-    },
-
-    close: function(url) {
-        this.autoReconnectMap.delete(url);
-        var s = this.sockets.get(url);
-        if (s && s.readyState <= 1) s.close(1000);
-        this.sockets.delete(url);
-        this.save();
-    },
-    closeAll: function() {
-        var ks = Array.from(this.sockets.keys());
-        for (var i = 0; i < ks.length; i++) this.close(ks[i]);
-    },
-    getConnections: function() { return Array.from(this.sockets.keys()); }
+    hasConn(u){ var s=this.sockets.get(u); return s?s.readyState===1:false; },
+    hasAnyConn(){ var ks=Array.from(this.sockets.keys()); for(var i=0;i<ks.length;i++){ if(this.hasConn(ks[i]))return true; } return false; },
+    close(url){ this.autoRecMap.delete(url); var s=this.sockets.get(url); if(s&&s.readyState<=1)s.close(1000); this.sockets.delete(url); this.save(); },
+    closeAll(){ var ks=Array.from(this.sockets.keys()); for(var i=0;i<ks.length;i++)this.close(ks[i]); },
+    getConns(){ return Array.from(this.sockets.keys()); }
 };
 
-// ==================== 物品状态处理器 (精确复刻参考实现) ====================
-const ItemState = (function() {
-    var states = new Map();
-    var shockHistory = [];
-
-    function initSlot(name) { if (!states.get(name)) states.set(name, { itemName: null, effects: new Map() }); }
-
-    function clearOld() {
-        var r = true;
-        while (r && shockHistory.length > 0) {
-            if (Date.now() - shockHistory[0][0] > MIN_SHOCK_MS) { shockHistory.shift(); }
-            else { r = false; }
-        }
-    }
-
-    function hasShockInHistory(slot, level) {
-        for (var i = 0; i < shockHistory.length; i++) {
-            if (shockHistory[i][1] === slot && shockHistory[i][2] === level) return true;
-        }
-        return false;
-    }
-
+// ==================== ItemState Handler ====================
+const ItemState = (function(){
+    var st=new Map(), skH=[];
+    function init(n){ if(!st.get(n))st.set(n,{nm:null,fx:new Map()}); }
+    function clrO(){ var r=true; while(r&&skH.length>0){ if(Date.now()-skH[0][0]>MIN_SK)skH.shift(); else r=false; } }
+    function hasSK(s,l){ for(var i=0;i<skH.length;i++){ if(skH[i][1]===s&&skH[i][2]===l)return true; } return false; }
     return {
-        log: function() { console.log(states); },
-
-        updateItemProperties: function(effect, tag, slot, itemName, level, offset) {
-            offset = offset || 0;
-            if (!slot || level === undefined || level === null || !itemName) return;
-            level += offset;
-            initSlot(slot);
-            var s = states.get(slot);
-            if (s.effects.get(effect) === level) return;
-            s.itemName = itemName;
-            s.effects.set(effect, level);
-
-            WS.sendFormattedArgs(tag, [
-                ['assetGroupName', slot],
-                ['level', level],
-                ['itemName', itemName]
-            ]);
-
-            // 记录到UI历史
-            var pct = Math.round((level / 5) * 100);
-            if (tag === 'toyEvent') {
-                toyIntensityMap[slot] = pct;
-                var maxI = 0;
-                var keys = Object.keys(toyIntensityMap);
-                for (var i = 0; i < keys.length; i++) { if (toyIntensityMap[keys[i]] > maxI) maxI = toyIntensityMap[keys[i]]; }
-                currentMaxIntensity = maxI;
-            }
-            addAction(tag + '/' + effect, slot, pct, itemName);
+        updProps(effect,tag,slot,nm,level,off){ off=off||0; if(!slot||level===undefined||level===null||!nm)return; level+=off;
+            init(slot); var s=st.get(slot); if(s.fx.get(effect)===level)return; s.nm=nm; s.fx.set(effect,level);
+            WS.sendFA(tag,[['assetGroupName',slot],['level',level],['itemName',nm]]);
+            var pct=Math.round(level/5*100);
+            if(tag==='toyEvent'){ toyMap[slot]=pct; var mx=0; var ks=Object.keys(toyMap); for(var i=0;i<ks.length;i++){ if(toyMap[ks[i]]>mx)mx=toyMap[ks[i]]; } curIntensity=mx; }
+            addLog(tag,slot,pct,nm);
         },
-
-        updateAllProps: function(item) {
-            if (!item) return;
-            this.updateItemProperties('Vibration', 'toyEvent',
-                item.Asset && item.Asset.DynamicGroupName,
-                item.Asset && item.Asset.Name,
-                item.Property && item.Property.Intensity, 1);
-            this.updateItemProperties('Inflation', 'inflationEvent',
-                item.Asset && item.Asset.DynamicGroupName,
-                item.Asset && item.Asset.Name,
-                item.Property && item.Property.InflateLevel);
+        updAll(item){ if(!item)return;
+            this.updProps('Vibration','toyEvent',item.Asset&&item.Asset.DynamicGroupName,item.Asset&&item.Asset.Name,item.Property&&item.Property.Intensity,1);
+            this.updProps('Inflation','inflationEvent',item.Asset&&item.Asset.DynamicGroupName,item.Asset&&item.Asset.Name,item.Property&&item.Property.InflateLevel);
         },
-
-        sendShockEvent: function(slot, level, assetName) {
-            if (level >= 0 && level <= 2 && slot) {
-                clearOld();
-                if (!hasShockInHistory(slot, level)) {
-                    WS.sendFormattedArgs('activityEvent', [
-                        ['assetGroupName', slot],
-                        ['actionName', SHOCK_NAMES[level]],
-                        ['assetName', assetName]
-                    ]);
-                    shockHistory.push([Date.now(), slot, level, assetName]);
-                    addAction('Shock', slot, (level + 1) * 33, assetName);
-                }
-            }
-        },
-
-        clearAll: function(slot) {
-            var s = states.get(slot);
-            if (!s) return;
-            if (s.effects.get('Vibration') !== null)
-                this.updateItemProperties('Vibration', 'toyEvent', slot, s.itemName, 0);
-            if (s.effects.get('Inflation') !== null)
-                this.updateItemProperties('Inflation', 'inflationEvent', slot, s.itemName, 0);
-            states.delete(slot);
-        },
-
-        getItemName: function(slot) { var s = states.get(slot); return s ? s.itemName : null; }
+        sendSK(slot,level,an){ if(level>=0&&level<=2&&slot){ clrO(); if(!hasSK(slot,level)){ WS.sendFA('activityEvent',[['assetGroupName',slot],['actionName',SK_NM[level]],['assetName',an]]); skH.push([Date.now(),slot,level,an]); addLog('Shock',slot,(level+1)*33,an); } } },
+        clearAll(slot){ var s=st.get(slot); if(!s)return; if(s.fx.get('Vibration')!==null)this.updProps('Vibration','toyEvent',slot,s.nm,0); if(s.fx.get('Inflation')!==null)this.updProps('Inflation','inflationEvent',slot,s.nm,0); st.delete(slot); },
+        getNm(slot){ var s=st.get(slot); return s?s.nm:null; }
     };
 })();
 
-// ==================== 动作历史 (UI用) ====================
-function addAction(action, slot, intensity, asset) {
-    actionHistory.unshift({
-        time: new Date().toLocaleTimeString(),
-        action: action, slot: slot || '', intensity: intensity || 0, asset: asset || ''
-    });
-    if (actionHistory.length > 30) actionHistory.length = 30;
-    updateUI();
+// ==================== 动作日志 ====================
+function addLog(action,slot,intensity,asset,who){
+    who = who || '';
+    actLog.unshift({time:new Date().toLocaleTimeString(),action:action,slot:slot||'',intensity:intensity||0,asset:asset||'',who:who});
+    if(actLog.length>50)actLog.length=50;
+    updUI();
+}
+
+// ==================== 强度表情 ====================
+function intensityEmoji(pct){
+    if(pct<=0)return '💤'; if(pct<20)return '🌱'; if(pct<40)return '💡'; if(pct<60)return '🔥'; if(pct<80)return '💥'; return '🚨';
+}
+
+// ==================== 聊天广播 ====================
+var lastBroadcast = 0;
+var lastBroadcastLevel = -1;
+var BROADCAST_MIN_INTERVAL = 5000;
+var BROADCAST_MIN_CHANGE = 10;
+
+function maybeBroadcast(){
+    if(!broadcastOn)return;
+    var now = Date.now();
+    if(now - lastBroadcast < BROADCAST_MIN_INTERVAL && Math.abs(curIntensity - lastBroadcastLevel) < BROADCAST_MIN_CHANGE) return;
+    lastBroadcast = now;
+    lastBroadcastLevel = curIntensity;
+
+    var bar='', segs=10, filled=Math.round(curIntensity/10);
+    for(var i=0;i<segs;i++)bar+=i<filled?'█':'░';
+    var emoji = intensityEmoji(curIntensity);
+    var msg = '[🎮] '+Player.Name+' 的玩具 '+emoji+' ['+bar+'] '+curIntensity+'%';
+    if(typeof ChatRoomSendLocal !== 'undefined') ChatRoomSendLocal(msg, 8000);
+}
+
+// ==================== 远程控制 ====================
+function handleRemoteCommand(sourceName, intensity){
+    if(!remoteAllow){ ChatRoomSendLocal('[🎮] 远程控制已关闭',5000); return; }
+
+    // 白名单检查
+    if(whitelist.length>0){
+        var found=false;
+        for(var i=0;i<whitelist.length;i++){ if(whitelist[i].toLowerCase()===sourceName.toLowerCase()){ found=true; break; } }
+        if(!found){ ChatRoomSendLocal('[🎮] '+sourceName+' 不在白名单中',5000); return; }
+    }
+
+    // 冷却检查
+    var lk = sourceName.toLowerCase();
+    if(lastRemoteTime[lk] && Date.now()-lastRemoteTime[lk] < REMOTE_COOLDOWN){
+        ChatRoomSendLocal('[🎮] '+sourceName+' 请等待 '+(Math.round((REMOTE_COOLDOWN-(Date.now()-lastRemoteTime[lk]))/100)/10)+'秒',5000);
+        return;
+    }
+    lastRemoteTime[lk]=Date.now();
+
+    intensity = Math.max(0,Math.min(100,intensity));
+    curControlledBy = sourceName;
+
+    // 发送到XToys
+    WS.sendFA('toyEvent',[
+        ['assetGroupName','ItemVulva'],
+        ['level',Math.round(intensity/20)],
+        ['itemName','RemoteControl']
+    ]);
+
+    curIntensity = intensity;
+    toyMap['remote'] = intensity;
+    addLog('Remote', 'remote', intensity, sourceName, sourceName);
+
+    // 广播
+    var emoji = intensityEmoji(intensity);
+    ChatRoomSendLocal('[🎮] '+sourceName+' 设置 '+Player.Name+' 的玩具为 '+intensity+'% '+emoji, 10000);
+
+    // 自动反应
+    var reacts = ['啊...','嗯~','感受到了...','好强烈...','玩具在震...','唔...'];
+    if(intensity>80) reacts = ['啊啊啊!!!','太强了!!','要坏掉了...','不行了...','天啊...'];
+    else if(intensity>50) reacts = ['嗯嗯~','好舒服...','就是这样...','再强一点...'];
+    else if(intensity>20) reacts = ['嗯...','轻轻的...','感觉到了...'];
+
+    var react = reacts[Math.floor(Math.random()*reacts.length)];
+    if(typeof ChatRoomSendLocal !== 'undefined'){
+        setTimeout(function(){ ChatRoomSendLocal(react, 5000); }, 1000);
+    }
 }
 
 // ==================== 辅助函数 ====================
-function searchDict(msg, tag, subKey) {
-    if (!msg || !Array.isArray(msg.Dictionary)) return null;
-    for (var i = 0; i < msg.Dictionary.length; i++) {
-        var keys = Object.keys(msg.Dictionary[i]);
-        var vals = Object.values(msg.Dictionary[i]);
-        if (keys[0] === tag) return vals[0];
-        var idx = keys.indexOf(subKey);
-        if (keys[0] === 'Tag' && vals[0] === tag && idx >= 0) return vals[idx];
-    }
-    return null;
-}
-function getPlayerAssetByName(n) { return Player.Appearance.find(function(d) { return d.Asset.Name === n; }); }
-function getPlayerAssetBySlot(n) { return Player.Appearance.find(function(d) { return d.Asset.DynamicGroupName === n; }); }
-function getShockLevel(d) { switch (d.Content) { case 'TriggerShock0': return 0; case 'TriggerShock1': return 1; case 'TriggerShock2': return 2; default: return -1; } }
-function esc(s) { if (!s) return ''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function sDict(msg,tag,sub){ if(!msg||!Array.isArray(msg.Dictionary))return null; for(var i=0;i<msg.Dictionary.length;i++){ var k=Object.keys(msg.Dictionary[i]),v=Object.values(msg.Dictionary[i]); if(k[0]===tag)return v[0]; var ix=k.indexOf(sub); if(k[0]==='Tag'&&v[0]===tag&&ix>=0)return v[ix]; } return null; }
+function pByName(n){ return Player.Appearance.find(function(d){ return d.Asset.Name===n; }); }
+function pBySlot(n){ return Player.Appearance.find(function(d){ return d.Asset.DynamicGroupName===n; }); }
+function getSKL(d){ switch(d.Content){ case 'TriggerShock0':return 0;case 'TriggerShock1':return 1;case 'TriggerShock2':return 2;default:return -1; } }
+function esc(s){ if(!s)return''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function log(m){ console.log('['+SHORT+'] '+m); }
 
-// ==================== UI 面板 ====================
-var panelVisible = true;
-var dragging = false, dragTarget = null, dragOX = 0, dragOY = 0;
+// ==================== UI ====================
+var panelVis=true, dragging=false, dgT=null, dgOX=0, dgOY=0;
 
-function createUI() {
-    // — 游戏机图标 —
-    var icon = document.createElement('div');
-    icon.id = 'bcp-icon';
-    icon.innerHTML = '🎮';
-    icon.title = 'XToys 控制面板';
-    icon.style.cssText = 'position:fixed;z-index:999990;width:48px;height:48px;background:linear-gradient(135deg,#d32f2f,#b71c1c);border:3px solid #4a0000;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.4),inset 0 2px 0 rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:24px;cursor:pointer;transition:transform .15s;user-select:none;-webkit-user-select:none;';
-    icon.onmouseenter = function() { this.style.transform = 'scale(1.12)'; };
-    icon.onmouseleave = function() { this.style.transform = 'scale(1)'; };
-    icon.onmousedown = function(e) { if (e.button===0) { dragOX = e.clientX - icon.getBoundingClientRect().left; dragOY = e.clientY - icon.getBoundingClientRect().top; dragTarget = icon; } };
-    icon.onclick = function(e) { if (!dragging) togglePanel(); dragging = false; };
+function createUI(){
+    // icon
+    var ic=document.createElement('div'); ic.id='bcp-icon'; ic.innerHTML='🎮';
+    ic.title='XToys 遥控面板';
+    ic.style.cssText='position:fixed;z-index:999990;width:48px;height:48px;background:linear-gradient(135deg,#d32f2f,#b71c1c);border:3px solid #4a0000;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.4),inset 0 2px 0 rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:24px;cursor:pointer;transition:transform .15s;user-select:none;-webkit-user-select:none;';
+    ic.onmouseenter=function(){ this.style.transform='scale(1.12)'; };
+    ic.onmouseleave=function(){ this.style.transform='scale(1)'; };
+    ic.onmousedown=function(e){ if(e.button===0){ dgOX=e.clientX-ic.getBoundingClientRect().left; dgOY=e.clientY-ic.getBoundingClientRect().top; dgT=ic; } };
+    ic.onclick=function(e){ if(!dragging)tgPanel(); dragging=false; };
+    document.body.appendChild(ic);
 
-    // — 面板 —
-    var p = document.createElement('div');
-    p.id = 'bcp-panel';
-    p.style.cssText = 'position:fixed;z-index:999991;width:260px;background:#18181e;border:2px solid #c62828;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.55);font:13px "Segoe UI","Microsoft YaHei",sans-serif;color:#ccc;overflow:hidden;user-select:none;-webkit-user-select:none;';
-
+    // panel
+    var p=document.createElement('div'); p.id='bcp-panel';
+    p.style.cssText='position:fixed;z-index:999991;width:270px;background:#18181e;border:2px solid #c62828;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.55);font:12px "Segoe UI","Microsoft YaHei",sans-serif;color:#ccc;overflow:hidden;user-select:none;-webkit-user-select:none;';
     p.innerHTML =
     '<div id="bcp-title" style="background:#1a1a22;padding:8px 10px;cursor:move;display:flex;align-items:center;gap:8px;border-bottom:1px solid #333;">'+
-        '<span style="font-size:16px;">🎮</span>'+
-        '<b style="color:#ff5252;font-size:13px;">XToys 控制</b>'+
+        '<span style="font-size:16px;">🎮</span><b style="color:#ff5252;">XToys 遥控</b>'+
         '<span id="bcp-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#f44336;box-shadow:0 0 6px #f44336;"></span>'+
-        '<button id="bcp-min" style="background:none;border:1px solid #555;color:#999;width:22px;height:22px;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;padding:0;">_</button>'+
-    '</div>'+
+        '<button id="bcp-min" style="background:none;border:1px solid #555;color:#999;width:22px;height:22px;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;padding:0;">_</button></div>'+
     '<div id="bcp-body" style="padding:10px;">'+
+        // Webhook
         '<div style="margin-bottom:8px;"><div style="font-size:10px;color:#888;margin-bottom:3px;">Webhook</div>'+
+            '<div style="display:flex;gap:4px;"><input id="bcp-input" placeholder="输入 ID 或 ws://..." style="flex:1;padding:5px 7px;background:#111;border:1px solid #444;border-radius:4px;color:#ddd;font-size:11px;outline:none;"><button id="bcp-conn" style="padding:5px 10px;background:#c62828;border:none;border-radius:4px;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">连接</button></div></div>'+
+        // 强度条
+        '<div style="margin-bottom:8px;"><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span style="font-size:10px;color:#888;">实时强度</span><span id="bcp-intval" style="font-size:12px;color:#4caf50;font-weight:700;">0%</span></div>'+
+            '<div style="height:8px;background:#222;border-radius:4px;overflow:hidden;border:1px solid #333;"><div id="bcp-bar" style="height:100%;width:0%;background:#4caf50;border-radius:4px;transition:width .3s;"></div></div></div>'+
+        // 快捷预设
+        '<div style="margin-bottom:8px;"><div style="font-size:10px;color:#888;margin-bottom:3px;">快捷预设</div>'+
             '<div style="display:flex;gap:4px;">'+
-                '<input id="bcp-input" placeholder="输入 ID 或 ws://..." style="flex:1;padding:5px 7px;background:#111;border:1px solid #444;border-radius:4px;color:#ddd;font-size:11px;outline:none;">'+
-                '<button id="bcp-conn" style="padding:5px 10px;background:#c62828;border:none;border-radius:4px;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">连接</button>'+
+                '<button class="bcp-preset" data-v="0" style="flex:1;padding:4px 0;background:#333;border:1px solid #555;border-radius:4px;color:#aaa;font-size:9px;cursor:pointer;">💤 停</button>'+
+                '<button class="bcp-preset" data-v="25" style="flex:1;padding:4px 0;background:#1b3a1b;border:1px solid #2e7d32;border-radius:4px;color:#8bc34a;font-size:9px;cursor:pointer;">🌱 弱</button>'+
+                '<button class="bcp-preset" data-v="50" style="flex:1;padding:4px 0;background:#2a2a10;border:1px solid #f57f17;border-radius:4px;color:#ffc107;font-size:9px;cursor:pointer;">🔥 中</button>'+
+                '<button class="bcp-preset" data-v="80" style="flex:1;padding:4px 0;background:#2a1010;border:1px solid #c62828;border-radius:4px;color:#ff5252;font-size:9px;cursor:pointer;">💥 强</button>'+
+                '<button class="bcp-preset" data-v="100" style="flex:1;padding:4px 0;background:#3a0000;border:1px solid #d50000;border-radius:4px;color:#ff1744;font-size:9px;cursor:pointer;">🚨 满</button>'+
             '</div></div>'+
-        '<div style="margin-bottom:8px;">'+
-            '<div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span style="font-size:10px;color:#888;">当前强度</span><span id="bcp-intval" style="font-size:12px;color:#4caf50;font-weight:700;">0%</span></div>'+
-            '<div style="height:6px;background:#222;border-radius:3px;overflow:hidden;border:1px solid #333;"><div id="bcp-bar" style="height:100%;width:0%;background:#4caf50;border-radius:3px;transition:width .3s;"></div></div>'+
-        '</div>'+
-        '<div style="margin-bottom:8px;">'+
-            '<div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span style="font-size:10px;color:#888;">手动强度</span><span id="bcp-manval" style="font-size:10px;color:#aaa;">50%</span></div>'+
+        // 手动滑块
+        '<div style="margin-bottom:8px;"><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span style="font-size:10px;color:#888;">手动调节</span><span id="bcp-manval" style="font-size:10px;color:#aaa;">50%</span></div>'+
             '<input id="bcp-slider" type="range" min="0" max="100" value="50" style="width:100%;height:4px;-webkit-appearance:none;appearance:none;background:#333;border-radius:2px;outline:none;accent-color:#ff5252;cursor:pointer;">'+
-            '<div style="display:flex;gap:4px;margin-top:3px;"><button id="bcp-apply" style="flex:1;padding:4px;background:#2e7d32;border:none;border-radius:4px;color:#fff;font-size:10px;cursor:pointer;">应用</button><button id="bcp-zero" style="flex:1;padding:4px;background:#333;border:1px solid #555;border-radius:4px;color:#ff5252;font-size:10px;cursor:pointer;">归零</button></div>'+
+            '<div style="display:flex;gap:4px;margin-top:3px;"><button id="bcp-apply" style="flex:1;padding:4px;background:#2e7d32;border:none;border-radius:4px;color:#fff;font-size:10px;cursor:pointer;">应用</button><button id="bcp-zero" style="flex:1;padding:4px;background:#333;border:1px solid #555;border-radius:4px;color:#ff5252;font-size:10px;cursor:pointer;">归零</button></div></div>'+
+        // 开关行
+        '<div style="margin-bottom:8px;display:flex;gap:8px;">'+
+            '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">远程控制</span><button id="bcp-remote" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
+            '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">状态广播</span><button id="bcp-bcast" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
         '</div>'+
-        '<div><div style="font-size:10px;color:#888;margin-bottom:3px;">最近事件</div>'+
-            '<div id="bcp-log" style="height:100px;overflow-y:auto;font-size:10px;color:#999;background:#0c0c14;border-radius:4px;padding:5px;border:1px solid #222;">等待游戏事件...</div>'+
-        '</div>'+
+        // 最近事件
+        '<div><div style="font-size:10px;color:#888;margin-bottom:3px;">事件记录</div>'+
+            '<div id="bcp-log" style="height:100px;overflow-y:auto;font-size:9px;color:#999;background:#0c0c14;border-radius:4px;padding:5px;border:1px solid #222;">等待游戏事件...</div></div>'+
     '</div>';
-
-    document.body.appendChild(icon);
     document.body.appendChild(p);
 
-    // — 拖拽 —
-    document.getElementById('bcp-title').onmousedown = function(e) {
-        if (e.target.tagName === 'BUTTON') return;
-        if (e.button !== 0) return;
-        dragTarget = p;
-        dragOX = e.clientX - p.getBoundingClientRect().left;
-        dragOY = e.clientY - p.getBoundingClientRect().top;
-    };
-    document.addEventListener('mousemove', function(e) {
-        if (!dragTarget) return;
-        dragging = true;
-        var nx = Math.max(0, Math.min(e.clientX - dragOX, window.innerWidth - dragTarget.offsetWidth));
-        var ny = Math.max(0, Math.min(e.clientY - dragOY, window.innerHeight - dragTarget.offsetHeight));
-        dragTarget.style.left = nx + 'px';
-        dragTarget.style.top = ny + 'px';
-        dragTarget.style.right = 'auto';
-        dragTarget.style.bottom = 'auto';
-        if (dragTarget === p) {
-            icon.style.left = (nx + 5) + 'px';
-            icon.style.top = (ny - 55) + 'px';
-            icon.style.right = 'auto';
-            icon.style.bottom = 'auto';
-        }
+    // drag
+    document.getElementById('bcp-title').onmousedown=function(e){ if(e.target.tagName==='BUTTON')return; if(e.button!==0)return; dgT=p; dgOX=e.clientX-p.getBoundingClientRect().left; dgOY=e.clientY-p.getBoundingClientRect().top; };
+    document.addEventListener('mousemove',function(e){ if(!dgT)return; dragging=true;
+        var nx=Math.max(0,Math.min(e.clientX-dgOX,window.innerWidth-dgT.offsetWidth)),ny=Math.max(0,Math.min(e.clientY-dgOY,window.innerHeight-dgT.offsetHeight));
+        dgT.style.left=nx+'px'; dgT.style.top=ny+'px'; dgT.style.right='auto'; dgT.style.bottom='auto';
+        if(dgT===p){ ic.style.left=(nx+5)+'px'; ic.style.top=(ny-55)+'px'; ic.style.right='auto'; ic.style.bottom='auto'; }
     });
-    document.addEventListener('mouseup', function() {
-        if (dragging) savePos();
-        dragTarget = null;
-        dragging = false;
-    });
+    document.addEventListener('mouseup',function(){ if(dragging)savePos(); dgT=null; dragging=false; });
 
-    // — 按钮事件 —
-    document.getElementById('bcp-conn').onclick = function() {
-        var val = document.getElementById('bcp-input').value.trim();
-        if (!val) return;
-        var url = /^wss?:\/\//i.test(val) ? val : 'wss://webhook.xtoys.app/' + val;
-        if (WS.hasConnection(url)) { WS.close(url); this.textContent = '连接'; refreshDot(); }
-        else { WS.connect(url); this.textContent = '断开'; refreshDot(); }
+    // events
+    document.getElementById('bcp-conn').onclick=function(){
+        var val=document.getElementById('bcp-input').value.trim(); if(!val)return;
+        var url=/^wss?:\/\//i.test(val)?val:'wss://webhook.xtoys.app/'+val;
+        if(WS.hasConn(url)){ WS.close(url); this.textContent='连接'; refDot(); }
+        else { WS.connect(url); this.textContent='断开'; refDot(); }
     };
-    document.getElementById('bcp-min').onclick = function() { togglePanel(); };
-    document.getElementById('bcp-slider').oninput = function() { document.getElementById('bcp-manval').textContent = this.value + '%'; };
-    document.getElementById('bcp-apply').onclick = function() {
-        var v = parseInt(document.getElementById('bcp-slider').value);
-        // 发送手动强度（使用 toyEvent 格式，匹配用户DGLab配置ItemVulva）
-        WS.sendFormattedArgs('toyEvent', [
-            ['assetGroupName', 'ItemVulva'],
-            ['level', Math.round(v / 20)],  // 0-100 → 0-5 scale
-            ['itemName', 'ManualOverride']
-        ]);
-        addAction('Manual', 'ItemVulva', v, 'Override');
+    document.getElementById('bcp-min').onclick=function(){ tgPanel(); };
+    document.getElementById('bcp-slider').oninput=function(){ document.getElementById('bcp-manval').textContent=this.value+'%'; };
+    document.getElementById('bcp-apply').onclick=function(){
+        var v=parseInt(document.getElementById('bcp-slider').value);
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','ManualControl']]);
+        curIntensity=v; toyMap['manual']=v; addLog('Manual','ItemVulva',v,'Self'); updUI(); maybeBroadcast();
     };
-    document.getElementById('bcp-zero').onclick = function() {
-        document.getElementById('bcp-slider').value = 0;
-        document.getElementById('bcp-manval').textContent = '0%';
-        WS.sendFormattedArgs('toyEvent', [
-            ['assetGroupName', 'ItemVulva'],
-            ['level', 0],
-            ['itemName', 'ManualOverride']
-        ]);
-        addAction('Stop', 'all', 0, 'Override');
+    document.getElementById('bcp-zero').onclick=function(){
+        document.getElementById('bcp-slider').value=0; document.getElementById('bcp-manval').textContent='0%';
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',0],['itemName','ManualControl']]);
+        curIntensity=0; toyMap={}; addLog('Stop','all',0,'Self'); updUI();
     };
+    document.getElementById('bcp-remote').onclick=function(){
+        remoteAllow=!remoteAllow;
+        this.textContent=remoteAllow?'开':'关';
+        this.style.background=remoteAllow?'#2e7d32':'#555';
+        var s=loadS(); s.remoteAllow=remoteAllow; saveS(s);
+    };
+    document.getElementById('bcp-bcast').onclick=function(){
+        broadcastOn=!broadcastOn;
+        this.textContent=broadcastOn?'开':'关';
+        this.style.background=broadcastOn?'#2e7d32':'#555';
+        var s=loadS(); s.broadcastOn=broadcastOn; saveS(s);
+    };
+
+    // preset buttons
+    var pbs=document.getElementsByClassName('bcp-preset');
+    for(var i=0;i<pbs.length;i++){ pbs[i].onclick=function(){
+        var v=parseInt(this.getAttribute('data-v'));
+        document.getElementById('bcp-slider').value=v; document.getElementById('bcp-manval').textContent=v+'%';
+        WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',Math.round(v/20)],['itemName','PresetControl']]);
+        curIntensity=v; toyMap['preset']=v; addLog('Preset','ItemVulva',v,'Self'); updUI(); maybeBroadcast();
+    }; }
 
     restorePos();
+    // restore saved settings
+    var s=loadS();
+    remoteAllow = s.remoteAllow !== false;
+    broadcastOn = s.broadcastOn !== false;
+    whitelist = Array.isArray(s.whitelist) ? s.whitelist : [];
+    var rb=document.getElementById('bcp-remote'), bb=document.getElementById('bcp-bcast');
+    if(rb){ rb.textContent=remoteAllow?'开':'关'; rb.style.background=remoteAllow?'#2e7d32':'#555'; }
+    if(bb){ bb.textContent=broadcastOn?'开':'关'; bb.style.background=broadcastOn?'#2e7d32':'#555'; }
 }
 
-function togglePanel() {
-    var p = document.getElementById('bcp-panel');
-    var i = document.getElementById('bcp-icon');
-    if (!p || !i) return;
-    panelVisible = !panelVisible;
-    p.style.display = panelVisible ? 'block' : 'none';
-    savePos();
-}
-
-function savePos() {
-    var s = loadState();
-    var i = document.getElementById('bcp-icon');
-    var p = document.getElementById('bcp-panel');
-    if (i) { s.ix = parseInt(i.style.left) || i.getBoundingClientRect().left; s.iy = parseInt(i.style.top) || i.getBoundingClientRect().top; }
-    if (p) { s.px = parseInt(p.style.left) || p.getBoundingClientRect().left; s.py = parseInt(p.style.top) || p.getBoundingClientRect().top; }
-    s.vis = panelVisible;
-    saveState(s);
-}
-
-function restorePos() {
-    var s = loadState();
-    var i = document.getElementById('bcp-icon');
-    var p = document.getElementById('bcp-panel');
-    var ix = (s.ix >= 0 && s.ix < window.innerWidth) ? s.ix : window.innerWidth - 65;
-    var iy = (s.iy >= 0 && s.iy < window.innerHeight) ? s.iy : window.innerHeight - 80;
-    i.style.left = ix + 'px'; i.style.top = iy + 'px'; i.style.right = 'auto'; i.style.bottom = 'auto';
-    p.style.left = ((s.px >= 0) ? s.px : ix - 260) + 'px';
-    p.style.top = ((s.py >= 0) ? s.py : iy - 5) + 'px';
-    p.style.right = 'auto'; p.style.bottom = 'auto';
-    panelVisible = s.vis !== false;
-    p.style.display = panelVisible ? 'block' : 'none';
-}
-
-function refreshDot() {
-    var d = document.getElementById('bcp-dot');
-    if (!d) return;
-    if (WS.hasAnyConnection()) { d.style.background = '#4caf50'; d.style.boxShadow = '0 0 8px #4caf50'; }
-    else { d.style.background = '#f44336'; d.style.boxShadow = '0 0 6px #f44336'; }
-}
-
-function updateUI() {
-    var bar = document.getElementById('bcp-bar');
-    var val = document.getElementById('bcp-intval');
-    if (bar && val) {
-        bar.style.width = currentMaxIntensity + '%';
-        val.textContent = currentMaxIntensity + '%';
-        var c = currentMaxIntensity < 30 ? '#4caf50' : currentMaxIntensity < 60 ? '#ff9800' : '#f44336';
-        bar.style.background = c;
-        val.style.color = c;
+function tgPanel(){ panelVis=!panelVis; var p=document.getElementById('bcp-panel'); if(p)p.style.display=panelVis?'block':'none'; savePos(); }
+function savePos(){ var s=loadS(); var ic=document.getElementById('bcp-icon'),p=document.getElementById('bcp-panel');
+    if(ic){ s.ix=parseInt(ic.style.left)||ic.getBoundingClientRect().left; s.iy=parseInt(ic.style.top)||ic.getBoundingClientRect().top; }
+    if(p){ s.px=parseInt(p.style.left)||p.getBoundingClientRect().left; s.py=parseInt(p.style.top)||p.getBoundingClientRect().top; }
+    s.vis=panelVis; s.remoteAllow=remoteAllow; s.broadcastOn=broadcastOn; s.whitelist=whitelist; saveS(s); }
+function restorePos(){ var s=loadS(); var ic=document.getElementById('bcp-icon'),p=document.getElementById('bcp-panel');
+    var ix=(s.ix>=0&&s.ix<window.innerWidth)?s.ix:window.innerWidth-65,iy=(s.iy>=0&&s.iy<window.innerHeight)?s.iy:window.innerHeight-80;
+    ic.style.left=ix+'px'; ic.style.top=iy+'px'; ic.style.right='auto'; ic.style.bottom='auto';
+    p.style.left=((s.px>=0)?s.px:ix-270)+'px'; p.style.top=((s.py>=0)?s.py:iy-5)+'px'; p.style.right='auto'; p.style.bottom='auto';
+    panelVis=s.vis!==false; p.style.display=panelVis?'block':'none'; }
+function refDot(){ var d=document.getElementById('bcp-dot'); if(!d)return; if(WS.hasAnyConn()){ d.style.background='#4caf50'; d.style.boxShadow='0 0 8px #4caf50'; } else { d.style.background='#f44336'; d.style.boxShadow='0 0 6px #f44336'; } }
+function updUI(){
+    var bar=document.getElementById('bcp-bar'),val=document.getElementById('bcp-intval');
+    if(bar&&val){ bar.style.width=curIntensity+'%'; val.textContent=curIntensity+'%';
+        var c=curIntensity<30?'#4caf50':curIntensity<60?'#ff9800':'#f44336'; bar.style.background=c; val.style.color=c; }
+    refDot();
+    var log=document.getElementById('bcp-log'); if(!log)return;
+    if(actLog.length===0){ log.innerHTML='<span style="color:#555;">等待游戏事件...</span>'; return; }
+    var h='';
+    for(var i=0;i<Math.min(8,actLog.length);i++){
+        var a=actLog[i],cl=a.intensity<30?'#8bc34a':a.intensity<60?'#ffc107':'#ff5722';
+        h+='<div style="display:flex;justify-content:space-between;margin-bottom:1px;">'+
+            '<span>'+esc(a.action)+(a.slot?' @'+esc(a.slot):'')+(a.who?' by '+esc(a.who):'')+'</span>'+
+            '<span style="color:'+cl+';font-weight:600;">'+a.intensity+'%</span></div>';
     }
-    refreshDot();
-    var log = document.getElementById('bcp-log');
-    if (!log) return;
-    if (actionHistory.length === 0) { log.innerHTML = '<span style="color:#555;">等待游戏事件...</span>'; return; }
-    var h = '';
-    for (var i = 0; i < Math.min(8, actionHistory.length); i++) {
-        var a = actionHistory[i];
-        var cl = a.intensity < 30 ? '#8bc34a' : a.intensity < 60 ? '#ffc107' : '#ff5722';
-        h += '<div style="display:flex;justify-content:space-between;margin-bottom:1px;">'+
-            '<span>' + esc(a.action) + (a.slot?' @'+a.slot:'') + '</span>'+
-            '<span style="color:'+cl+';font-weight:600;">' + a.intensity + '%</span></div>';
+    log.innerHTML=h;
+}
+
+// ==================== 聊天命令解析 ====================
+function handleChatCommands(data){
+    if(!data||!data.Content||data.Type!=='Chat')return false;
+    var msg = data.Content.trim();
+    if(!msg||msg.indexOf('/toy')!==0)return false;
+
+    var sourceName = data.SenderName || sDict(data,'SourceCharacter','Name') || 'Unknown';
+    var parts = msg.split(/\s+/); // ['/toy', 'subcommand', ...]
+
+    if(parts.length<2){
+        // /toy alone → show help
+        ChatRoomSendLocal('[🎮] /toy <0-100> 设置强度 | /toy info | /toy allow <名> | /toy block <名> | /toy whitelist | /toy remote on/off | /toy broadcast on/off',15000);
+        return true;
     }
-    log.innerHTML = h;
+
+    var sub = parts[1].toLowerCase();
+
+    // /toy <number> — 远程控制强度
+    if(/^\d+$/.test(sub)){
+        var intensity = parseInt(sub);
+        handleRemoteCommand(sourceName, intensity);
+        return true;
+    }
+
+    // /toy info — 显示当前状态
+    if(sub==='info'){
+        var s=loadS();
+        var wl=s.whitelist||[];
+        ChatRoomSendLocal('[🎮] '+Player.Name+' 的玩具状态:\n强度: '+curIntensity+'% '+intensityEmoji(curIntensity)+
+            '\nWebSocket: '+(WS.hasAnyConn()?'已连接 ('+WS.getConns().length+')':'未连接')+
+            '\n远程控制: '+(remoteAllow?'开启':'关闭')+
+            '\n广播: '+(broadcastOn?'开启':'关闭')+
+            '\n白名单: '+(wl.length>0?wl.join(', '):'无 (所有人可控制)'),20000);
+        return true;
+    }
+
+    // /toy allow <name> — 添加白名单
+    if(sub==='allow'&&parts.length>=3){
+        var nm=parts.slice(2).join(' ');
+        var found=false;
+        for(var i=0;i<whitelist.length;i++){ if(whitelist[i].toLowerCase()===nm.toLowerCase()){ found=true; break; } }
+        if(!found){ whitelist.push(nm); savePos(); }
+        ChatRoomSendLocal('[🎮] 白名单已更新: '+(whitelist.length>0?whitelist.join(', '):'无 (所有人可控制)'),10000);
+        return true;
+    }
+
+    // /toy block <name> — 移除白名单
+    if(sub==='block'&&parts.length>=3){
+        var nm=parts.slice(2).join(' ').toLowerCase();
+        whitelist = whitelist.filter(function(n){ return n.toLowerCase()!==nm; });
+        savePos();
+        ChatRoomSendLocal('[🎮] 白名单已更新: '+(whitelist.length>0?whitelist.join(', '):'无 (所有人可控制)'),10000);
+        return true;
+    }
+
+    // /toy whitelist — 显示白名单
+    if(sub==='whitelist'||sub==='list'||sub==='wl'){
+        ChatRoomSendLocal('[🎮] 白名单: '+(whitelist.length>0?whitelist.join(', '):'无 (所有人可控制)'),10000);
+        return true;
+    }
+
+    // /toy remote on/off
+    if(sub==='remote'&&parts.length>=3){
+        remoteAllow = parts[2].toLowerCase()==='on';
+        var rb=document.getElementById('bcp-remote');
+        if(rb){ rb.textContent=remoteAllow?'开':'关'; rb.style.background=remoteAllow?'#2e7d32':'#555'; }
+        savePos();
+        ChatRoomSendLocal('[🎮] 远程控制已'+(remoteAllow?'开启':'关闭'),10000);
+        return true;
+    }
+
+    // /toy broadcast on/off
+    if(sub==='broadcast'&&parts.length>=3){
+        broadcastOn = parts[2].toLowerCase()==='on';
+        var bb=document.getElementById('bcp-bcast');
+        if(bb){ bb.textContent=broadcastOn?'开':'关'; bb.style.background=broadcastOn?'#2e7d32':'#555'; }
+        savePos();
+        ChatRoomSendLocal('[🎮] 状态广播已'+(broadcastOn?'开启':'关闭'),10000);
+        return true;
+    }
+
+    // /toy help
+    ChatRoomSendLocal('[🎮] 命令:\n/toy <0-100> - 设置强度\n/toy info - 状态\n/toy allow|block <名> - 白名单\n/toy whitelist - 查看白名单\n/toy remote on|off\n/toy broadcast on|off',20000);
+    return true;
 }
 
 // ==================== 主逻辑 ====================
-async function main() {
-    console.log(SHORT_NAME + ' v' + VERSION + ' starting...');
+async function main(){
+    log('v'+VER+' starting...');
 
-    // 等待 bcModSdk
-    while (!window.hasOwnProperty('bcModSdk')) {
-        await new Promise(function(r) { setTimeout(r, 1000); });
-        console.log(SHORT_NAME + ': waiting for bcModSdk...');
-    }
-    await new Promise(function(r) {
-        var check = function() {
-            if (typeof ServerIsConnected !== 'undefined' && ServerIsConnected &&
-                typeof ServerSocket !== 'undefined' && typeof Commands !== 'undefined') {
-                r();
-            } else { setTimeout(check, 500); }
-        };
-        check();
-    });
+    while(!window.hasOwnProperty('bcModSdk')){ await new Promise(function(r){ setTimeout(r,1000); }); log('waiting for bcModSdk...'); }
+    await new Promise(function(r){ var c=function(){ if(typeof ServerIsConnected!=='undefined'&&ServerIsConnected&&typeof ServerSocket!=='undefined'&&typeof Commands!=='undefined')r(); else setTimeout(c,500); }; c(); });
 
-    console.log(SHORT_NAME + ': SDK ready, registering mod...');
+    log('SDK ready');
+    var modApi = bcModSdk.registerMod({ name:FULL, fullName:SHORT, version:VER, repository:'https://github.com/QAQMOON/XToys-Config' });
 
-    var modApi = bcModSdk.registerMod({
-        name: FULL_NAME,
-        fullName: SHORT_NAME,
-        version: VERSION,
-        repository: 'https://github.com/QAQMOON/XToys-Config'
-    });
-
-    // UI
     createUI();
-    WS.uiCallback = refreshDot;
-    WS.onGameEvent = function() { /* handled in ItemState */ };
+    WS.uiCb=refDot;
 
-    // ===== 服务器重连自动连接 =====
-    modApi.hookFunction('ServerSetConnected', 2, function(args, next) {
-        next(args);
-        if (args[0] === true) WS.connectSaved();
-    });
+    // 服务器重连
+    modApi.hookFunction('ServerSetConnected',2,function(args,next){ next(args); if(args[0]===true)WS.connectSaved(); });
 
-    // ===== 聊天消息处理 (核心链路) =====
-    function handleActivities(data) {
-        if (data.Type !== 'Activity') return;
-        var group = searchDict(data, 'FocusAssetGroup', 'FocusGroupName');
-        var name = searchDict(data, 'ActivityName');
-        var asset = searchDict(data, 'ActivityAsset', 'AssetName');
-        var target = searchDict(data, 'TargetCharacter', 'MemberNumber');
-        var source = searchDict(data, 'SourceCharacter', 'MemberNumber');
-        if (!group || !name) return;
-
-        if (target === Player.MemberNumber) {
-            WS.sendFormattedArgs('activityEvent', [
-                ['assetGroupName', group], ['actionName', name], ['assetName', asset]
-            ]);
-            addAction(name, group, 30, asset);
-        } else if (source === Player.MemberNumber) {
-            WS.sendFormattedArgs('activityOnOtherEvent', [
-                ['assetGroupName', group], ['actionName', name], ['assetName', asset]
-            ]);
-        }
+    // ===== ChatRoomMessage =====
+    function hActivities(data){
+        if(data.Type!=='Activity')return;
+        var g=sDict(data,'FocusAssetGroup','FocusGroupName'),n=sDict(data,'ActivityName'),a=sDict(data,'ActivityAsset','AssetName');
+        var t=sDict(data,'TargetCharacter','MemberNumber'),s=sDict(data,'SourceCharacter','MemberNumber');
+        if(!g||!n)return;
+        if(t===Player.MemberNumber){ WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); addLog(n,g,30,a); }
+        else if(s===Player.MemberNumber){ WS.sendFA('activityOnOtherEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); }
     }
 
-    function handleItemEquip(data) {
-        if (data.Type !== 'Action' ||
-            searchDict(data, 'DestinationCharacter', 'MemberNumber') !== Player.MemberNumber ||
-            searchDict(data, 'SourceCharacter', 'MemberNumber') === Player.MemberNumber) return;
-
-        var slot = searchDict(data, 'FocusAssetGroup', 'FocusGroupName');
-        if (!slot) return;
-
-        if (data.Content === 'ActionUse') {
-            var name = searchDict(data, 'NextAsset', 'AssetName');
-            if (!name) return;
-            WS.sendFormattedArgs('itemAdded', [['assetName', name], ['assetGroupName', slot]]);
-            addAction('ItemAdded', slot, 0, name);
-            var asset = getPlayerAssetByName(name);
-            if (asset) ItemState.updateAllProps(asset);
-        } else if (data.Content === 'ActionRemove') {
-            var pn = searchDict(data, 'PrevAsset', 'AssetName');
-            if (!pn) return;
-            WS.sendFormattedArgs('itemRemoved', [['assetName', pn], ['assetGroupName', slot]]);
+    function hItemEquip(data){
+        if(data.Type!=='Action'||sDict(data,'DestinationCharacter','MemberNumber')!==Player.MemberNumber||sDict(data,'SourceCharacter','MemberNumber')===Player.MemberNumber)return;
+        var slot=sDict(data,'FocusAssetGroup','FocusGroupName'); if(!slot)return;
+        if(data.Content==='ActionUse'){
+            var nm=sDict(data,'NextAsset','AssetName'); if(!nm)return;
+            WS.sendFA('itemAdded',[['assetName',nm],['assetGroupName',slot]]);
+            var asset=pByName(nm); if(asset)ItemState.updAll(asset);
+            addLog('ItemAdded',slot,0,nm);
+        } else if(data.Content==='ActionRemove'){
+            var pn=sDict(data,'PrevAsset','AssetName'); if(!pn)return;
+            WS.sendFA('itemRemoved',[['assetName',pn],['assetGroupName',slot]]);
             ItemState.clearAll(slot);
         }
     }
 
-    function handleToyEvents(data) {
-        if (data.Type !== 'Action' ||
-            !(searchDict(data, 'DestinationCharacter', 'MemberNumber') === Player.MemberNumber ||
-              searchDict(data, 'DestinationCharacterName', 'MemberNumber') === Player.MemberNumber ||
-              searchDict(data, 'TargetCharacterName', 'MemberNumber') === Player.MemberNumber)) return;
-
-        var assetName = searchDict(data, 'AssetName', 'AssetName');
-        var asset = getPlayerAssetByName(assetName);
-        var group = asset && asset.Asset && asset.Asset.Group && asset.Asset.Group.Name;
-        if (!group || !asset || !assetName) return;
-
-        ItemState.updateAllProps(asset);
-        ItemState.sendShockEvent(group, getShockLevel(data), assetName);
+    function hToyEvents(data){
+        if(data.Type!=='Action'||!(sDict(data,'DestinationCharacter','MemberNumber')===Player.MemberNumber||sDict(data,'DestinationCharacterName','MemberNumber')===Player.MemberNumber||sDict(data,'TargetCharacterName','MemberNumber')===Player.MemberNumber))return;
+        var an=sDict(data,'AssetName','AssetName'),asset=pByName(an),g=asset&&asset.Asset&&asset.Asset.Group&&asset.Asset.Group.Name;
+        if(!g||!asset||!an)return;
+        ItemState.updAll(asset); ItemState.sendSK(g,getSKL(data),an);
     }
 
-    ServerSocket.on('ChatRoomMessage', async function(data) {
-        if (!data || !data.Content || !data.Type ||
-            IGNORE_CONTENTS.has(data.Content) || IGNORE_TYPES.has(data.Type)) return;
-
-        handleActivities(data);
-        handleItemEquip(data);
-        handleToyEvents(data);
+    ServerSocket.on('ChatRoomMessage',async function(data){
+        if(!data||!data.Content||!data.Type||IG_CT.has(data.Content)||IG_TP.has(data.Type))return;
+        if(handleChatCommands(data))return; // chat commands take priority
+        hActivities(data);
+        hItemEquip(data);
+        hToyEvents(data);
     });
 
-    // ===== 振动/物品 钩子 =====
-    modApi.hookFunction('VibratorModePublish', 3, function(args, next) {
-        next(args);
-        if (args[1] && args[1].MemberNumber === Player.MemberNumber) {
-            var slot = args[2] && args[2].Asset && args[2].Asset.DynamicGroupName;
-            if (slot) {
-                var asset = getPlayerAssetBySlot(slot);
-                if (asset) ItemState.updateAllProps(asset);
-            }
-        }
-    });
+    // ===== 游戏钩子 =====
+    modApi.hookFunction('VibratorModePublish',3,function(args,next){ next(args); if(args[1]&&args[1].MemberNumber===Player.MemberNumber){ var slot=args[2]&&args[2].Asset&&args[2].Asset.DynamicGroupName; if(slot){ var asset=pBySlot(slot); if(asset)ItemState.updAll(asset); } } });
+    modApi.hookFunction('ExtendedItemSetOption',7,function(args,next){ next(args); if(args.length>=6&&args[1]&&args[1].MemberNumber===Player.MemberNumber){ var item=args[2]; if(item&&item.Asset&&item.Asset.DynamicGroupName)ItemState.updAll(item); } });
+    modApi.hookFunction('InventoryWear',8,function(args,next){ var ret=next(args); if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pByName(args[1]); if(asset){ WS.sendFA('itemAdded',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.updAll(asset); } } return ret; });
+    modApi.hookFunction('InventoryRemove',3,function(args,next){ if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pBySlot(args[1]); if(asset){ WS.sendFA('itemRemoved',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.clearAll(args[1]); } } next(args); });
+    modApi.hookFunction('PropertyShockPublishAction',3,function(args,next){ var si=null; if(Array.isArray(args)&&args[1]&&args[1].Property)si=args[1]; else if(typeof DialogFocusItem!=='undefined'&&DialogFocusItem&&DialogFocusItem.Property)si=DialogFocusItem; if(si){ var l=si.Property.ShockLevel; if(l===null||l===undefined)l=1; ItemState.sendSK(si.Asset&&si.Asset.DynamicGroupName,l,si.Asset&&si.Asset.Name); } next(args); });
 
-    modApi.hookFunction('ExtendedItemSetOption', 7, function(args, next) {
-        next(args);
-        if (args.length >= 6 && args[1] && args[1].MemberNumber === Player.MemberNumber) {
-            var item = args[2];
-            if (item && item.Asset && item.Asset.DynamicGroupName) {
-                ItemState.updateAllProps(item);
-            }
-        }
-    });
+    // 定时广播
+    setInterval(function(){ maybeBroadcast(); }, 8000);
 
-    modApi.hookFunction('InventoryWear', 8, function(args, next) {
-        var ret = next(args);
-        if (args[0] && args[0].MemberNumber === Player.MemberNumber) {
-            var asset = getPlayerAssetByName(args[1]);
-            if (asset) {
-                WS.sendFormattedArgs('itemAdded', [
-                    ['assetName', asset.Asset.Name],
-                    ['assetGroupName', asset.Asset.DynamicGroupName]
-                ]);
-                ItemState.updateAllProps(asset);
-            }
-        }
-        return ret;
-    });
-
-    modApi.hookFunction('InventoryRemove', 3, function(args, next) {
-        if (args[0] && args[0].MemberNumber === Player.MemberNumber) {
-            var asset = getPlayerAssetBySlot(args[1]);
-            if (asset) {
-                WS.sendFormattedArgs('itemRemoved', [
-                    ['assetName', asset.Asset.Name],
-                    ['assetGroupName', asset.Asset.DynamicGroupName]
-                ]);
-                ItemState.clearAll(args[1]);
-            }
-        }
-        next(args);
-    });
-
-    modApi.hookFunction('PropertyShockPublishAction', 3, function(args, next) {
-        var shockItem = null;
-        if (Array.isArray(args) && args[1] && args[1].Property) shockItem = args[1];
-        else if (typeof DialogFocusItem !== 'undefined' && DialogFocusItem && DialogFocusItem.Property) shockItem = DialogFocusItem;
-
-        if (shockItem) {
-            var level = shockItem.Property.ShockLevel;
-            if (level === null || level === undefined) level = defaultShockLevel;
-            ItemState.sendShockEvent(
-                shockItem.Asset && shockItem.Asset.DynamicGroupName,
-                level,
-                shockItem.Asset && shockItem.Asset.Name
-            );
-        }
-        next(args);
-    });
-
-    // 初始化完成
-    console.log(SHORT_NAME + ' v' + VERSION + ' 已就绪 ✅');
-    console.log(SHORT_NAME + ': WebSocket 消息 → 浏览器控制台查看');
-    console.log(SHORT_NAME + ': 使用 🎮 图标展开/隐藏面板');
-    refreshDot();
+    log('v'+VER+' 已就绪 ✅');
+    log('命令: /toy <0-100> | /toy info | /toy allow|block <名> | /toy remote on|off');
+    refDot();
 }
 
-main().catch(function(e) { console.error(SHORT_NAME + ': init error', e); });
+main().catch(function(e){ console.error('['+SHORT+'] init error',e); });
 
 })();
