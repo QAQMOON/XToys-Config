@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      2.8.0
-// @description  Bondage Club 遥控面板：波形+配对+小游戏+剧本+自动响应+广播+白名单
+// @version      3.0.0
+// @description  BC XToys v3: 身体反馈+波形+配对+小游戏+剧本+自动响应+广播+白名单
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
 // @match        https://www.bondageprojects.elementfx.com/*
@@ -17,7 +17,7 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VER = '2.8.0';
+const VER = '3.0.0';
 const FULL = 'BC XToys Control Panel';
 const SHORT = 'BC-XToys-Panel';
 const SK = 'BC_XToys_Panel_v2';
@@ -34,6 +34,74 @@ var autoResponseMap={};  // {actionName: {type, intensity, duration}}
 var voteBox={};          // {voterName: intensity}
 var mineMap={};          // {callerName: {mines:[1,2,3], found:[]}}
 var guessTarget=0;       // 猜谜目标值
+
+// ==================== 身体敏感度区域系统 ====================
+const BODY_ZONES = {
+    'ItemMouth': {sens:85, label:'口👄', color:'#ff6b9d'},
+    'ItemEar': {sens:90, label:'耳👂', color:'#ff8a80'},
+    'ItemVulva': {sens:100, label:'私🌸', color:'#f06292'},
+    'ItemVulvaPiercings': {sens:95, label:'环💍', color:'#ec407a'},
+    'ItemBreast': {sens:75, label:'胸💜', color:'#ce93d8'},
+    'ItemNipples': {sens:80, label:'头🎀', color:'#ba68c8'},
+    'ItemButt': {sens:65, label:'臀🍑', color:'#ffab91'},
+    'ItemLegs': {sens:50, label:'腿🦵', color:'#ffe082'},
+    'ItemTorso': {sens:45, label:'身👤', color:'#b0bec5'},
+    'ItemPelvis': {sens:60, label:'腰🩷', color:'#ef9a9a'},
+    'ItemArms': {sens:40, label:'臂💪', color:'#a5d6a7'},
+    'ItemFeet': {sens:35, label:'脚🦶', color:'#ffcc80'},
+    'ItemBoots': {sens:30, label:'靴👢', color:'#bcaaa4'},
+    'ItemHands': {sens:30, label:'手🤲', color:'#80cbc4'},
+    'ItemHead': {sens:55, label:'头🧠', color:'#90caf9'},
+    'ItemNeck': {sens:70, label:'颈💋', color:'#f48fb1'},
+};
+var activeZones = {};       // {slotName: {intensity, action, time, source}}
+var zoneStackMode = 'max';  // 'max' | 'add' | 'avg'
+var zoneStackTotal = 0;
+
+function getZoneSens(slot){ var z=BODY_ZONES[slot]; return z?z.sens:50; }
+function getZoneColor(slot){ var z=BODY_ZONES[slot]; return z?z.color:'#888'; }
+function getZoneLabel(slot){ var z=BODY_ZONES[slot]; return z?z.label:slot; }
+
+function updateActiveZone(slot, action, intensity, source){
+    if(!slot)return;
+    activeZones[slot]={intensity:intensity, action:action, time:Date.now(), source:source||''};
+    // 清理5秒无更新的区域
+    var ks=Object.keys(activeZones), now=Date.now();
+    for(var i=0;i<ks.length;i++){ if(now-activeZones[ks[i]].time>5000)delete activeZones[ks[i]]; }
+    recalcZoneStack();
+}
+
+function recalcZoneStack(){
+    var ks=Object.keys(activeZones);
+    if(ks.length===0){ zoneStackTotal=0; return; }
+    if(zoneStackMode==='max'){
+        var mx=0;
+        for(var i=0;i<ks.length;i++){ var v=activeZones[ks[i]].intensity; if(v>mx)mx=v; }
+        zoneStackTotal=mx;
+    } else if(zoneStackMode==='add'){
+        var sum=0;
+        for(var i=0;i<ks.length;i++){ sum+=activeZones[ks[i]].intensity; }
+        zoneStackTotal=Math.min(100,sum);
+    } else { // avg
+        var sum=0;
+        for(var i=0;i<ks.length;i++){ sum+=activeZones[ks[i]].intensity; }
+        zoneStackTotal=Math.round(sum/ks.length);
+    }
+}
+
+// 根据身体部位计算基础强度
+function calcZoneIntensity(slot, actionName){
+    var base=getZoneSens(slot);
+    // 动作强度加成
+    var actBonus=0;
+    if(/Shock|Orgasm/i.test(actionName)) actBonus=20;
+    else if(/Spank|Kick|Slap|Bite|Masturbate/i.test(actionName)) actBonus=10;
+    else if(/Kiss|Lick|Suck|Nibble/i.test(actionName)) actBonus=0;
+    else if(/Caress|Pet|Cuddle|Massage/i.test(actionName)) actBonus=-5;
+    var pct=Math.max(5,Math.min(100,base+actBonus));
+    // 缩放0-5到XToys level
+    return {pct:pct, level:Math.round(pct/20)};
+}
 
 // ==================== 持久化 ====================
 function loadS() { try { return JSON.parse(localStorage.getItem(SK)) || {}; } catch(e) { return {}; } }
@@ -378,6 +446,19 @@ function createUI(){
                 '<button id="bcp-timer-go" style="flex:1;padding:4px;background:#4527a0;border:none;border-radius:4px;color:#fff;font-size:9px;cursor:pointer;">⏱ 定时器</button>'+
                 '<button id="bcp-script-stop" style="flex:1;padding:4px;background:#333;border:1px solid #555;border-radius:4px;color:#ff5252;font-size:9px;cursor:pointer;">停止</button></div>'+
         '</div>'+
+        // 身体热力图
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
+                '<span style="font-size:10px;color:#f06292;">🔥 身体活跃区</span>'+
+                '<span style="font-size:8px;color:#888;">模式:</span>'+
+                '<select id="bcp-zone-mode" style="padding:1px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:8px;">'+
+                    '<option value="max">最高</option><option value="add">叠加</option><option value="avg">平均</option></select></div>'+
+            '<div id="bcp-heatmap" style="display:flex;flex-wrap:wrap;gap:3px;min-height:20px;">'+
+                '<span style="font-size:9px;color:#555;">等待活动...</span></div>'+
+            '<div style="display:flex;justify-content:space-between;margin-top:3px;">'+
+                '<span style="font-size:8px;color:#888;">叠加强度</span>'+
+                '<span id="bcp-stack-val" style="font-size:10px;color:#f06292;font-weight:700;">0%</span></div>'+
+        '</div>'+
         // 最近事件
         '<div><div style="font-size:10px;color:#888;margin-bottom:3px;">事件记录</div>'+
             '<div id="bcp-log" style="height:100px;overflow-y:auto;font-size:9px;color:#999;background:#0c0c14;border-radius:4px;padding:5px;border:1px solid #222;">等待游戏事件...</div></div>'+
@@ -424,6 +505,9 @@ function createUI(){
         this.style.background=broadcastOn?'#2e7d32':'#555';
         var s=loadS(); s.broadcastOn=broadcastOn; saveS(s);
     };
+
+    // 堆叠模式
+    document.getElementById('bcp-zone-mode').onchange=function(){ zoneStackMode=this.value; recalcZoneStack(); curIntensity=Math.max(curIntensity,zoneStackTotal); updUI(); var s=loadS(); s.zoneStackMode=zoneStackMode; saveS(s); };
 
     // 配对按钮
     document.getElementById('bcp-pair-share').onclick=function(){ sharePairCode(); };
@@ -500,6 +584,21 @@ function updUI(){
     if(bar&&val){ bar.style.width=curIntensity+'%'; val.textContent=curIntensity+'%';
         var c=curIntensity<30?'#4caf50':curIntensity<60?'#ff9800':'#f44336'; bar.style.background=c; val.style.color=c; }
     refDot();
+    // 身体热力图
+    var hm=document.getElementById('bcp-heatmap'), sv=document.getElementById('bcp-stack-val');
+    if(hm){
+        var azs=Object.keys(activeZones);
+        if(azs.length===0){ hm.innerHTML='<span style="font-size:9px;color:#555;">等待活动...</span>'; }
+        else {
+            var h='';
+            for(var i=0;i<azs.length;i++){
+                var z=activeZones[azs[i]], c=getZoneColor(azs[i]), lb=getZoneLabel(azs[i]);
+                h+='<span style="padding:1px 5px;background:'+c+'22;border:1px solid '+c+';border-radius:3px;font-size:8px;color:'+c+';" title="'+lb+' '+z.intensity+'% '+z.action+'">'+lb+' '+z.intensity+'%</span>';
+            }
+            hm.innerHTML=h;
+        }
+        if(sv)sv.textContent=zoneStackTotal+'%';
+    }
     // 配对状态
     var ps=document.getElementById('bcp-pair-status');
     if(ps){
@@ -803,6 +902,15 @@ function handleChatCommands(data){
     // /toy timer <分钟> [强度] — 定时器
     if(sub==='timer'&&parts.length>=3){ var tm=parseInt(parts[2]), ti=parseInt(parts[3])||80; scriptTimer(Math.max(1,tm),Math.max(0,Math.min(100,ti))); return true; }
 
+    // /toy zone — 身体区域控制
+    if(sub==='zone'){
+        if(parts.length<3){ ChatRoomSendLocal('[🔥] 身体区域:\n/toy zone list - 查看敏感度\n/toy zone mode max|add|avg - 堆叠模式\n活跃区: '+Object.keys(activeZones).map(function(k){return getZoneLabel(k)+' '+activeZones[k].intensity+'%';}).join(', '),15000); return true; }
+        var zact=parts[2].toLowerCase();
+        if(zact==='list'){ var zl=Object.keys(BODY_ZONES).map(function(k){ var z=BODY_ZONES[k]; return z.label+' 敏感'+z.sens+'%'; }).join(' | '); ChatRoomSendLocal('[🔥] 身体敏感度:\n'+zl,20000); return true; }
+        if(zact==='mode'&&parts.length>=4){ var zm=parts[3].toLowerCase(); if(zm==='max'||zm==='add'||zm==='avg'){ zoneStackMode=zm; recalcZoneStack(); var zes=document.getElementById('bcp-zone-mode'); if(zes)zes.value=zm; ChatRoomSendLocal('[🔥] 堆叠模式切换为: '+zm,5000); } return true; }
+        return true;
+    }
+
     // /toy auto — 自动响应规则管理
     if(sub==='auto'){
         if(parts.length<3){ var ar=Object.keys(autoResponseMap).join(', ');
@@ -851,7 +959,18 @@ async function main(){
         var g=sDict(data,'FocusAssetGroup','FocusGroupName'),n=sDict(data,'ActivityName'),a=sDict(data,'ActivityAsset','AssetName');
         var t=sDict(data,'TargetCharacter','MemberNumber'),s=sDict(data,'SourceCharacter','MemberNumber');
         if(!g||!n)return;
-        if(t===Player.MemberNumber){ WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); addLog(n,g,30,a); checkAutoResponse(n,g); }
+        if(t===Player.MemberNumber){
+            // 身体敏感度计算强度
+            var zi=calcZoneIntensity(g,n);
+            WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]);
+            // 同时发送带强度的toyEvent
+            WS.sendFA('toyEvent',[['assetGroupName',g],['level',zi.level],['itemName',n]]);
+            updateActiveZone(g,n,zi.pct,'');
+            curIntensity=Math.max(curIntensity,zoneStackTotal);
+            toyMap[g]=zi.pct;
+            addLog(n,g,zi.pct,a);
+            checkAutoResponse(n,g);
+        }
         else if(s===Player.MemberNumber){ WS.sendFA('activityOnOtherEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); }
     }
 
@@ -862,11 +981,13 @@ async function main(){
             var nm=sDict(data,'NextAsset','AssetName'); if(!nm)return;
             WS.sendFA('itemAdded',[['assetName',nm],['assetGroupName',slot]]);
             var asset=pByName(nm); if(asset)ItemState.updAll(asset);
-            addLog('ItemAdded',slot,0,nm);
+            updateActiveZone(slot,'ItemAdded',10,'');
+            addLog('ItemAdded',slot,10,nm);
         } else if(data.Content==='ActionRemove'){
             var pn=sDict(data,'PrevAsset','AssetName'); if(!pn)return;
             WS.sendFA('itemRemoved',[['assetName',pn],['assetGroupName',slot]]);
             ItemState.clearAll(slot);
+            delete activeZones[slot]; recalcZoneStack();
         }
     }
 
@@ -875,14 +996,54 @@ async function main(){
         var an=sDict(data,'AssetName','AssetName'),asset=pByName(an),g=asset&&asset.Asset&&asset.Asset.Group&&asset.Asset.Group.Name;
         if(!g||!asset||!an)return;
         ItemState.updAll(asset); ItemState.sendSK(g,getSKL(data),an);
+        updateActiveZone(g,'ToyEvent',toyMap[g]||30,'');
+    }
+
+    // Portal Panties 远程玩具
+    function hPortalLink(data){
+        if(data.Type!=='Action')return;
+        var g=sDict(data,'FocusAssetGroup','FocusGroupName'), a=sDict(data,'AssetName','AssetName');
+        var t=sDict(data,'TargetCharacter'), s=sDict(data,'SourceCharacter');
+        var n=null;
+        switch(data.Content){
+            case 'PortalLinkFunctionActivityCaress':n='Caress';break;
+            case 'PortalLinkFunctionActivityKiss':n='Kiss';break;
+            case 'PortalLinkFunctionActivityMasturbateHand':n='MasturbateHand';break;
+            case 'PortalLinkFunctionActivitySlap':n='Slap';break;
+            case 'PortalLinkFunctionActivityMasturbateTongue':n='MasturbateTongue';break;
+        }
+        if(!g||!n||a!=='PortalPanties')return;
+        if(t===Player.MemberNumber){ WS.sendFA('activityEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); updateActiveZone(g,n,30,'Portal'); addLog('Portal:'+n,g,30,a); }
+        else if(s===Player.MemberNumber){ WS.sendFA('activityOnOtherEvent',[['assetGroupName',g],['actionName',n],['assetName',a]]); }
+    }
+
+    // 特殊文本物品状态 (吸乳器/乳头吸杯/夹子/屁泵)
+    function hCustomItemText(slot,itemName,Content,itemRegex,offR,lowR,medR,highR,maxR){
+        if(!itemRegex.test(Content))return;
+        var intensity=-1;
+        if(offR.test(Content))intensity=0; else if(lowR.test(Content))intensity=1; else if(medR.test(Content))intensity=2; else if(highR.test(Content))intensity=3; else if(maxR.test(Content))intensity=4;
+        if(intensity===-1)return;
+        ItemState.updProps('Vibration','toyEvent',slot,itemName||slot,intensity,0);
+        updateActiveZone(slot,'CustomItem',intensity*20,'');
+        addLog('Custom:'+itemName,slot,intensity*20,'');
+    }
+
+    function hCustomTextItems(data){
+        if(data.Type!=='Action'||sDict(data,'DestinationCharacter','MemberNumber')!==Player.MemberNumber)return;
+        hCustomItemText('ItemNipples','LactationPump',data.Content,/LactationPumpPower/i,/ToOff/i,/LowSuction/i,/MediumSuction/i,/HighSuction/i,/MaximumSuction/i);
+        hCustomItemText('ItemNipples','NippleSuctionCups',data.Content,/NipSuc/i,/ToLoose/i,/ToLight/i,/ToMedium/i,/ToHeavy/i,/ToMaximum/i);
+        hCustomItemText('ItemNipples','PlateClamps',data.Content,/ItemNipplesPlate/i,/ClampsLoose/i,/ClampsLoose/i,/ClampsLoose/i,/ClampsLoose/i,/ClampsTight/i);
+        hCustomItemText('ItemButt','ButtPump',data.Content,/BPumps/i,/ToEmpty/i,/ToLight/i,/ToInflated/i,/ToBloated/i,/ToMaximum/i);
     }
 
     ServerSocket.on('ChatRoomMessage',async function(data){
         if(!data||!data.Content||!data.Type||IG_CT.has(data.Content)||IG_TP.has(data.Type))return;
-        if(handleChatCommands(data))return; // chat commands take priority
+        if(handleChatCommands(data))return;
+        hPortalLink(data);
         hActivities(data);
         hItemEquip(data);
         hToyEvents(data);
+        hCustomTextItems(data);
     });
 
     // ===== 游戏钩子 =====
