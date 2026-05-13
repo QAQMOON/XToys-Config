@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      2.0.0
-// @description  Bondage Club 遥控玩具面板：游戏联动+远程控制+聊天广播+权限白名单
+// @version      2.5.0
+// @description  Bondage Club 遥控玩具面板：配对控制+游戏联动+远程控制+聊天广播+权限白名单
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
 // @match        https://www.bondageprojects.elementfx.com/*
@@ -17,7 +17,7 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VER = '2.0.0';
+const VER = '2.5.0';
 const FULL = 'BC XToys Control Panel';
 const SHORT = 'BC-XToys-Panel';
 const SK = 'BC_XToys_Panel_v2';
@@ -181,7 +181,81 @@ function handleRemoteCommand(sourceName, intensity){
     }
 }
 
-// ==================== 辅助函数 ====================
+// ==================== 配对控制系统 ====================
+var pairSessions = {};   // {code: {wsUrl, expires, creator, limit, timer, timerId}}
+var pairedPartner = null; // {name, wsUrl, limit, timerId}
+var pairLimitMax = 100;   // paired partner max intensity
+
+function genPairCode(){ var c=''; var ch='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; for(var i=0;i<6;i++)c+=ch[Math.floor(Math.random()*ch.length)]; return c; }
+
+function sharePairCode(){
+    if(!WS.hasAnyConn()){ ChatRoomSendLocal('[🎮] 请先连接 XToys 再分享配对',5000); return; }
+    var code=genPairCode();
+    var urls=WS.getConns();
+    pairSessions[code]={wsUrl:urls[0], expires:Date.now()+60000, creator:Player.Name, limit:pairLimitMax};
+    // 清理过期
+    setTimeout(function(){ delete pairSessions[code]; }, 60000);
+    ChatRoomSendLocal('[🎮] '+Player.Name+' 分享玩具配对码: '+code+' (60秒有效)\n对方输入 /toy pair '+code+' 即可连接控制',15000);
+    addLog('PairShared','system',0,code);
+    updUI();
+}
+
+function acceptPairCode(code, sourceName){
+    var session=pairSessions[code];
+    if(!session){ ChatRoomSendLocal('[🎮] 配对码无效或已过期',5000); return; }
+    if(Date.now()>session.expires){ delete pairSessions[code]; ChatRoomSendLocal('[🎮] 配对码已过期',5000); return; }
+
+    // 断开旧配对
+    if(pairedPartner){ unpairPartner(); }
+
+    // 连接对方的 WS
+    var url=session.wsUrl;
+    pairedPartner={name:sourceName, wsUrl:url, limit:session.limit||100, timerId:null, timerEnd:null};
+
+    // 如果有限时
+    if(session.timer){
+        pairedPartner.timerEnd=Date.now()+session.timer;
+        pairedPartner.timerId=setTimeout(function(){ unpairPartner(true); }, session.timer);
+    }
+
+    WS.connect(url);
+    delete pairSessions[code];
+    ChatRoomSendLocal('[🎮] '+sourceName+' 已配对连接 '+Player.Name+' 的玩具! '+
+        (pairedPartner.limit<100?'限幅 '+pairedPartner.limit+'% ':'')+
+        (pairedPartner.timerEnd?'自动断开: '+new Date(pairedPartner.timerEnd).toLocaleTimeString():''),15000);
+    addLog('Paired','system',0,sourceName);
+    updUI();
+    saveS(loadS());
+}
+
+function unpairPartner(silent){
+    if(!pairedPartner)return;
+    if(pairedPartner.timerId)clearTimeout(pairedPartner.timerId);
+    var name=pairedPartner.name;
+    WS.close(pairedPartner.wsUrl);
+    pairedPartner=null;
+    if(!silent) ChatRoomSendLocal('[🎮] 配对已断开，'+name+' 不再控制你的玩具',8000);
+    addLog('Unpaired','system',0,name);
+    updUI();
+    saveS(loadS());
+}
+
+function sendPairedIntensity(intensity){
+    if(!pairedPartner)return false;
+    // 检查限幅
+    var capped=Math.min(intensity, pairedPartner.limit);
+    WS.sendFA('toyEvent',[
+        ['assetGroupName','ItemVulva'],
+        ['level',Math.round(capped/20)],
+        ['itemName','PairedControl']
+    ]);
+    curIntensity=capped;
+    toyMap['paired']=capped;
+    addLog('Partner', 'paired', capped, pairedPartner.name);
+    updUI();
+    maybeBroadcast();
+    return true;
+}
 function sDict(msg,tag,sub){ if(!msg||!Array.isArray(msg.Dictionary))return null; for(var i=0;i<msg.Dictionary.length;i++){ var k=Object.keys(msg.Dictionary[i]),v=Object.values(msg.Dictionary[i]); if(k[0]===tag)return v[0]; var ix=k.indexOf(sub); if(k[0]==='Tag'&&v[0]===tag&&ix>=0)return v[ix]; } return null; }
 function pByName(n){ return Player.Appearance.find(function(d){ return d.Asset.Name===n; }); }
 function pBySlot(n){ return Player.Appearance.find(function(d){ return d.Asset.DynamicGroupName===n; }); }
@@ -236,6 +310,19 @@ function createUI(){
             '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">远程控制</span><button id="bcp-remote" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
             '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">状态广播</span><button id="bcp-bcast" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
         '</div>'+
+        // 配对控制
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
+                '<span style="font-size:10px;color:#ff9800;">🔗 配对控制</span>'+
+                '<span id="bcp-pair-status" style="font-size:9px;color:#888;">未配对</span></div>'+
+            '<div style="display:flex;gap:4px;margin-bottom:4px;">'+
+                '<button id="bcp-pair-share" style="flex:1;padding:4px;background:#e65100;border:none;border-radius:4px;color:#fff;font-size:9px;cursor:pointer;">分享配对码</button>'+
+                '<button id="bcp-pair-stop" style="flex:1;padding:4px;background:#333;border:1px solid #555;border-radius:4px;color:#ff5252;font-size:9px;cursor:pointer;">断开配对</button></div>'+
+            '<div style="display:flex;align-items:center;gap:4px;">'+
+                '<span style="font-size:9px;color:#888;">限幅:</span>'+
+                '<input id="bcp-pair-limit" type="range" min="10" max="100" value="100" style="flex:1;height:4px;-webkit-appearance:none;appearance:none;background:#333;border-radius:2px;outline:none;accent-color:#ff9800;cursor:pointer;">'+
+                '<span id="bcp-pair-limit-val" style="font-size:9px;color:#ff9800;">100%</span></div>'+
+        '</div>'+
         // 最近事件
         '<div><div style="font-size:10px;color:#888;margin-bottom:3px;">事件记录</div>'+
             '<div id="bcp-log" style="height:100px;overflow-y:auto;font-size:9px;color:#999;background:#0c0c14;border-radius:4px;padding:5px;border:1px solid #222;">等待游戏事件...</div></div>'+
@@ -283,6 +370,20 @@ function createUI(){
         var s=loadS(); s.broadcastOn=broadcastOn; saveS(s);
     };
 
+    // 配对按钮
+    document.getElementById('bcp-pair-share').onclick=function(){ sharePairCode(); };
+    document.getElementById('bcp-pair-stop').onclick=function(){ unpairPartner(); };
+    var pairLimitSlider=document.getElementById('bcp-pair-limit');
+    pairLimitSlider.oninput=function(){ document.getElementById('bcp-pair-limit-val').textContent=this.value+'%'; pairLimitMax=parseInt(this.value); };
+    // 输入配对码：双击配对码区域弹出输入框
+    document.getElementById('bcp-pair-status').ondblclick=function(){
+        var code=prompt('输入对方分享的配对码 (6位):');
+        if(code&&code.length===6){
+            var msg={Content:'/toy pair '+code.trim().toUpperCase(), Type:'Chat', SenderName:Player.Name};
+            handleChatCommands(msg);
+        }
+    };
+
     // preset buttons
     var pbs=document.getElementsByClassName('bcp-preset');
     for(var i=0;i<pbs.length;i++){ pbs[i].onclick=function(){
@@ -319,6 +420,18 @@ function updUI(){
     if(bar&&val){ bar.style.width=curIntensity+'%'; val.textContent=curIntensity+'%';
         var c=curIntensity<30?'#4caf50':curIntensity<60?'#ff9800':'#f44336'; bar.style.background=c; val.style.color=c; }
     refDot();
+    // 配对状态
+    var ps=document.getElementById('bcp-pair-status');
+    if(ps){
+        if(pairedPartner){
+            var limitTxt=pairedPartner.limit<100?' [限'+pairedPartner.limit+'%]':'';
+            ps.textContent='已配对: '+pairedPartner.name+limitTxt;
+            ps.style.color='#ff9800';
+        } else {
+            ps.textContent='未配对';
+            ps.style.color='#888';
+        }
+    }
     var log=document.getElementById('bcp-log'); if(!log)return;
     if(actLog.length===0){ log.innerHTML='<span style="color:#555;">等待游戏事件...</span>'; return; }
     var h='';
@@ -342,7 +455,7 @@ function handleChatCommands(data){
 
     if(parts.length<2){
         // /toy alone → show help
-        ChatRoomSendLocal('[🎮] /toy <0-100> 设置强度 | /toy info | /toy allow <名> | /toy block <名> | /toy whitelist | /toy remote on/off | /toy broadcast on/off',15000);
+        ChatRoomSendLocal('[🎮] /toy <0-100> 设置强度 | /toy info | /toy pair 配对 | /toy allow|block <名> | /toy remote on|off | /toy broadcast on|off',15000);
         return true;
     }
 
@@ -402,6 +515,21 @@ function handleChatCommands(data){
         return true;
     }
 
+    // /toy pair — 配对控制
+    if(sub==='pair'){
+        if(parts.length<3){
+            ChatRoomSendLocal('[🎮] 配对命令:\n/toy pair share - 分享配对码\n/toy pair <code> - 输入配对码连接\n/toy pair stop - 断开配对\n/toy pair limit <10-100> - 限幅',15000);
+            return true;
+        }
+        var act=parts[2].toLowerCase();
+        if(act==='share'){ sharePairCode(); return true; }
+        if(act==='stop'){ unpairPartner(); return true; }
+        if(act==='limit'&&parts.length>=4){ var l=parseInt(parts[3]); pairLimitMax=Math.max(10,Math.min(100,l)); var pl=document.getElementById('bcp-pair-limit'); if(pl){ pl.value=pairLimitMax; document.getElementById('bcp-pair-limit-val').textContent=pairLimitMax+'%'; } ChatRoomSendLocal('[🎮] 配对限幅已设为 '+pairLimitMax+'%',8000); saveS(loadS()); return true; }
+        // /toy pair <code> — 输入配对码
+        if(/^[A-Z2-9]{6}$/i.test(act)){ acceptPairCode(act.toUpperCase(), sourceName); return true; }
+        return true;
+    }
+
     // /toy broadcast on/off
     if(sub==='broadcast'&&parts.length>=3){
         broadcastOn = parts[2].toLowerCase()==='on';
@@ -413,7 +541,7 @@ function handleChatCommands(data){
     }
 
     // /toy help
-    ChatRoomSendLocal('[🎮] 命令:\n/toy <0-100> - 设置强度\n/toy info - 状态\n/toy allow|block <名> - 白名单\n/toy whitelist - 查看白名单\n/toy remote on|off\n/toy broadcast on|off',20000);
+    ChatRoomSendLocal('[🎮] 命令:\n/toy <0-100> 强度 | /toy info 状态\n/toy pair share 分享配对 | /toy pair <码> 连接\n/toy pair limit <10-100> 限幅 | /toy pair stop 断开\n/toy allow|block <名> 白名单 | /toy whitelist\n/toy remote on|off | /toy broadcast on|off',20000);
     return true;
 }
 
@@ -484,7 +612,7 @@ async function main(){
     setInterval(function(){ maybeBroadcast(); }, 8000);
 
     log('v'+VER+' 已就绪 ✅');
-    log('命令: /toy <0-100> | /toy info | /toy allow|block <名> | /toy remote on|off');
+    log('命令: /toy <0-100> | /toy pair share | /toy info | /toy allow|block <名>');
     refDot();
 }
 
