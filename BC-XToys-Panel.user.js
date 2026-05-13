@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      3.0.0
+// @version      3.1.0
 // @description  BC XToys v3: 身体反馈+波形+配对+小游戏+剧本+自动响应+广播+白名单
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
@@ -17,7 +17,7 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VER = '3.0.0';
+const VER = '3.1.0';
 const FULL = 'BC XToys Control Panel';
 const SHORT = 'BC-XToys-Panel';
 const SK = 'BC_XToys_Panel_v2';
@@ -785,6 +785,168 @@ autoResponseMap['orgasm']={actions:['Orgasm','RuinedOrgasm','EdgeExplode'],parts
 autoResponseMap['spankHard']={actions:['Spank','SpankItem','Slap','Kick'],parts:['ItemButt','ItemVulva'],intensity:70};
 autoResponseMap['kissDeep']={actions:['FrenchKiss','Kiss','Lick','Nibble','Bite'],parts:['ItemMouth','ItemEar'],intensity:40};
 
+// ==================== 帮助系统 ====================
+function showHelp(topic){
+    var h='';
+    switch(topic){
+        case 'main':
+            h='[🎮] BC XToys v3.0 帮助菜单\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '/toy help basic   💡 基础命令\n'+
+              '/toy help remote  🔓 远程控制 & 白名单\n'+
+              '/toy help pair    🔗 配对控制系统\n'+
+              '/toy help wave    🌊 波形引擎 (8种)\n'+
+              '/toy help game    🎲 聊天小游戏 (5种)\n'+
+              '/toy help script  📜 剧本/定时模式\n'+
+              '/toy help zone    🔥 身体区域 & 敏感度\n'+
+              '/toy help auto    🤖 自动强度响应\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '输入 /toy help <类别> 查看详情';
+            break;
+        case 'basic':
+            h='[💡] 基础命令\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '/toy <0-100>\n  设置玩具强度百分比\n  例: /toy 50 → 50% 强度\n'+
+              '/toy info\n  查看当前玩具状态、连接数、\n  远程控制是否开启、白名单等\n'+
+              '/toy remote on|off\n  开关远程控制 (面板按钮也可)\n'+
+              '/toy broadcast on|off\n  开关自动状态广播 (每8秒)\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '面板操作:\n  右下角 🎮 图标 → 展开/隐藏面板\n  拖拽标题栏 → 移动面板\n  滑块+应用 → 手动控制强度\n  预设按钮 → 一键切换强度档位';
+            break;
+        case 'remote':
+            h='[🔓] 远程控制 & 白名单\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '远程控制: 其他玩家在聊天里用 /toy 命令\n'+
+              '直接控制你的实体玩具强度\n\n'+
+              '/toy remote on|off\n  开启/关闭远程控制\n'+
+              '/toy allow <玩家名>\n  添加玩家到白名单\n  例: /toy allow 小明\n'+
+              '/toy block <玩家名>\n  从白名单移除玩家\n'+
+              '/toy whitelist\n  查看当前白名单\n\n'+
+              '白名单为空时 → 所有人都可控制\n'+
+              '白名单有人时 → 仅白名单内玩家可控制\n'+
+              '冷却时间: 同一玩家3秒内不可重复命令';
+            break;
+        case 'pair':
+            h='[🔗] 配对控制系统\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '让你的伴侣直接绑定你的WebSocket\n'+
+              '对方的面板可以直接操控你的玩具\n\n'+
+              '【分享方 - 你】\n'+
+              '/toy pair share\n  生成6位配对码 (60秒有效)\n'+
+              '/toy pair stop\n  断开当前所有配对\n'+
+              '/toy pair limit <10-100>\n  限制配对方最大强度\n\n'+
+              '【接收方 - 伴侣】\n'+
+              '/toy pair <6位码>\n  输入配对码连接你的玩具\n\n'+
+              '【安全保护】\n'+
+              '  配对码60秒过期 / 可设强度上限\n'+
+              '  随时一键断开 / 面板显示配对状态';
+            break;
+        case 'wave':
+            h='[🌊] 波形引擎 (8种)\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '波形让玩具按预设模式自动起伏\n\n'+
+              '基本用法:\n'+
+              '/toy wave <类型> <最小> <最大> [速度]\n'+
+              '例: /toy wave heartbeat 10 80 2000\n'+
+              '/toy wave stop → 停止波形\n\n'+
+              '波形类型:\n'+
+              '  sine     🌊 正弦波 平滑呼吸式\n'+
+              '  square   ⏹️ 方波   开关交替\n'+
+              '  triangle 📐 三角波 直线升降\n'+
+              '  sawtooth 🪚 锯齿波 慢升瞬降\n'+
+              '  heartbeat💓 心跳   咚咚双脉冲\n'+
+              '  tease    😈 挑逗   反复边缘\n'+
+              '  turbulence🌪️ 湍流  随机漫步\n'+
+              '  crescendo🎵 渐强   阶梯增强\n\n'+
+              '参数:\n'+
+              '  最小/最大: 强度范围 (0-100%)\n'+
+              '  速度: 周期毫秒 (默认2000)';
+            break;
+        case 'game':
+            h='[🎲] 聊天小游戏 (5种)\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '房间内任何人可发起,结果影响你的玩具\n\n'+
+              '🎰 俄罗斯轮盘\n'+
+              '/toy roulette\n  6个槽随机选1个,强度10-100%\n'+
+              '  转到哪个就是哪个!\n\n'+
+              '🎲 骰子\n'+
+              '/toy dice [数量]\n'+
+              '  例: /toy dice 3\n'+
+              '  掷3个骰子,总和换算为强度\n\n'+
+              '❓ 猜谜\n'+
+              '/toy guess <1-100>\n'+
+              '  猜中隐藏数字→强度归零\n'+
+              '  猜错→强度+10% 提示高/低\n\n'+
+              '💣 地雷\n'+
+              '/toy mine <1-10>\n'+
+              '  10个格子有3个雷\n'+
+              '  踩中→100%满强度!\n\n'+
+              '🗳️ 投票\n'+
+              '/toy vote <0-100>\n'+
+              '  多人投票取平均值为强度\n'+
+              '  30秒内有效,≥2人投票生效';
+            break;
+        case 'script':
+            h='[📜] 剧本/定时模式\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '预设强度曲线,自动化运行\n\n'+
+              '渐强剧本:\n'+
+              '/toy ramp <目标%> [秒数]\n'+
+              '  例: /toy ramp 100 60\n'+
+              '  60秒内从当前强度平滑升到100%\n\n'+
+              '定时器:\n'+
+              '/toy timer <分钟> [强度%]\n'+
+              '  例: /toy timer 10 80\n'+
+              '  10分钟后自动设为80%强度\n\n'+
+              '面板操作:\n'+
+              '  目标[80]% 时长[30]秒\n'+
+              '  [渐强] [定时器] [停止]\n\n'+
+              '提示: 剧本和波形可以同时运行\n'+
+              '  效果会叠加在当前强度上';
+            break;
+        case 'zone':
+            h='[🔥] 身体区域 & 敏感度\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '不同身体部位自动映射不同强度\n\n'+
+              '敏感度表 (基础值):\n'+
+              '  私🌸100 环💍95 耳👂90 口👄85\n'+
+              '  头🎀80 胸💜75 颈💋70 臀🍑65\n'+
+              '  腰🩷60 头🧠55 腿🦵50 身👤45\n'+
+              '  臂💪40 脚🦶35 手🤲30 靴👢30\n\n'+
+              '动作加成:\n'+
+              '  Shock/Orgasm +20%\n'+
+              '  Spank/Kick/Slap/Bite +10%\n'+
+              '  Caress/Pet/Cuddle -5%\n\n'+
+              '/toy zone list  查看全部敏感度\n'+
+              '/toy zone mode max|add|avg\n'+
+              '  max=最高值 add=叠加 avg=平均\n\n'+
+              '面板显示 🔥 身体活跃区热力图';
+            break;
+        case 'auto':
+            h='[🤖] 自动强度响应\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '检测到特定游戏动作时自动触发\n\n'+
+              '预设规则:\n'+
+              '  Orgasm → 湍流波形 60-100%\n'+
+              '  打屁股/踢/扇 → 70%\n'+
+              '  深吻/舔耳/咬 → 40%\n\n'+
+              '自定义规则:\n'+
+              '/toy auto add <名> <强度> <动作> <部位>\n'+
+              '  例: /toy auto add kiss 60 Kiss,FrenchKiss ItemMouth,ItemEar\n'+
+              '/toy auto del <名>\n'+
+              '  删除一条规则\n'+
+              '/toy auto off\n'+
+              '  关闭所有自动响应\n\n'+
+              '支持的波形触发:\n'+
+              '  /toy auto add orgasm2 80 Orgasm *\n'+
+              '  (如果动作名匹配wave类型会启动波形)';
+            break;
+        default:
+            h='[🎮] 未知帮助主题: '+topic+'\n输入 /toy help 查看所有类别';
+    }
+    ChatRoomSendLocal(h, 30000);
+}
+
 // ==================== 聊天命令解析 ====================
 function handleChatCommands(data){
     if(!data||!data.Content||data.Type!=='Chat')return false;
@@ -795,12 +957,13 @@ function handleChatCommands(data){
     var parts = msg.split(/\s+/); // ['/toy', 'subcommand', ...]
 
     if(parts.length<2){
-        // /toy alone → show help
-        ChatRoomSendLocal('[🎮] /toy <0-100> 设置强度 | /toy info | /toy pair 配对 | /toy allow|block <名> | /toy remote on|off | /toy broadcast on|off',15000);
-        return true;
+        showHelp('main'); return true;
     }
 
     var sub = parts[1].toLowerCase();
+
+    // /toy help [topic]
+    if(sub==='help'){ showHelp(parts.length>=3?parts[2].toLowerCase():'main'); return true; }
 
     // /toy <number> — 远程控制强度
     if(/^\d+$/.test(sub)){
@@ -932,8 +1095,8 @@ function handleChatCommands(data){
         return true;
     }
 
-    // /toy help
-    ChatRoomSendLocal('[🎮] 命令:\n/toy <0-100> 强度 | /toy info 状态\n/toy pair share 分享配对 | /toy pair <码> 连接\n/toy pair limit <10-100> 限幅 | /toy pair stop 断开\n/toy allow|block <名> 白名单 | /toy whitelist\n/toy remote on|off | /toy broadcast on|off',20000);
+    // fallback
+    showHelp('main');
     return true;
 }
 
@@ -1057,7 +1220,7 @@ async function main(){
     setInterval(function(){ maybeBroadcast(); }, 8000);
 
     log('v'+VER+' 已就绪 ✅');
-    log('命令: /toy <0-100> | /toy pair share | /toy info | /toy allow|block <名>');
+    log('输入 /toy help 查看完整帮助菜单');
     refDot();
 }
 
