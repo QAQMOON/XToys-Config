@@ -1113,6 +1113,20 @@ async function main(){
     createUI();
     WS.uiCb=refDot;
 
+    // 注册 /toy 命令到游戏 (防止游戏拦截"没有该命令")
+    if(!Commands.some(function(a){ return a.Tag==='toy'; })){
+        Commands.push({
+            Tag: 'toy',
+            Description: 'XToys 玩具遥控命令。输入 /toy help 查看帮助。',
+            Action: function(args, rawCmd){
+                // 构造伪消息传给我们的处理器
+                var fake = {Content: rawCmd||'/toy '+args.join(' '), Type:'Chat', SenderName:Player.Name};
+                handleChatCommands(fake);
+            }
+        });
+        log('/toy 命令已注册');
+    }
+
     // 服务器重连
     modApi.hookFunction('ServerSetConnected',2,function(args,next){ next(args); if(args[0]===true)WS.connectSaved(); });
 
