@@ -1113,18 +1113,18 @@ async function main(){
     createUI();
     WS.uiCb=refDot;
 
-    // 注册 /toy 命令到游戏 (防止游戏拦截"没有该命令")
+    // 注册 /toy 命令到游戏
+    // BC 命令签名: Action(fullArgs, fullCmdStr, subArgs) — 共3个参数
     if(!Commands.some(function(a){ return a.Tag==='toy'; })){
         Commands.push({
             Tag: 'toy',
-            Description: 'XToys 玩具遥控命令。输入 /toy help 查看帮助。',
-            Action: function(args, rawCmd){
-                // 构造伪消息传给我们的处理器
-                var fake = {Content: rawCmd||'/toy '+args.join(' '), Type:'Chat', SenderName:Player.Name};
-                handleChatCommands(fake);
+            Description: 'XToys 玩具遥控。输入 /toy help 查看帮助菜单。',
+            Action: function(fullArgs, fullCmd){
+                var fakeMsg = {Content: (typeof fullCmd==='string'?fullCmd:'/toy '+Array.prototype.slice.call(fullArgs,1).join(' ')), Type:'Chat', SenderName:Player.Name};
+                handleChatCommands(fakeMsg);
             }
         });
-        log('/toy 命令已注册');
+        log('/toy 命令已注册 ✅ (Commands系统)');
     }
 
     // 服务器重连
