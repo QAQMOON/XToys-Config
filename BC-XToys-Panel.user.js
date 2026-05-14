@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC XToys Control Panel
 // @namespace    BC-XToys-Panel
-// @version      3.1.0
-// @description  BC XToys v3: 身体反馈+波形+配对+小游戏+剧本+自动响应+广播+白名单
+// @version      4.0.0
+// @description  BC XToys v4: 拘束检测+场景感知+主仆+面板换肤+身体反馈+波形+配对+游戏
 // @author       QAQMOON
 // @match        https://bondageprojects.elementfx.com/*
 // @match        https://www.bondageprojects.elementfx.com/*
@@ -17,7 +17,7 @@
 'use strict';
 
 // ==================== 常量 ====================
-const VER = '3.1.0';
+const VER = '4.0.0';
 const FULL = 'BC XToys Control Panel';
 const SHORT = 'BC-XToys-Panel';
 const SK = 'BC_XToys_Panel_v2';
@@ -57,6 +57,118 @@ const BODY_ZONES = {
 var activeZones = {};       // {slotName: {intensity, action, time, source}}
 var zoneStackMode = 'max';  // 'max' | 'add' | 'avg'
 var zoneStackTotal = 0;
+
+// ==================== 束缚检测 & 场景感知 ====================
+// 拘束物品匹配
+const BONDAGE_PATTERNS = {
+    armBindings: [/ArmBinder/i,/LeatherArmbinder/i,/RopeArms/i,/Shackles/i,/Handcuffs/i,/Armbinder/i,/Straitjacket/i,/Cuffs/i],
+    legBindings: [/LegCuffs/i,/Legbinder/i,/Shackles/i,/AnkleCuffs/i,/HobbleSkirt/i],
+    gagItems: [/Gag/i,/BallGag/i,/RingGag/i,/TapeGag/i,/Muzzle/i,/HarnessBall/i,/PanelGag/i,/BitGag/i,/Otm/i],
+    blindItems: [/Blindfold/i,/Blind/i,/EyeMask/i,/Hood/i],
+    earItems: [/EarPlug/i,/Headphones/i,/Earmuffs/i,/Deafener/i],
+    collarItems: [/Collar/i,/Choker/i,/NeckCuff/i,/PostureCollar/i],
+    fullBondage: [/Straitjacket/i,/Armbinder/i,/Hobble/i,/Mummification/i,/Sleepsack/i],
+};
+var bondageState = {arms:false, legs:false, gag:false, blind:false, ear:false, collar:false, fullBond:false, count:0};
+var sensoryMultiplier = 1.0;  // 感度倍率
+var sceneMode = 'normal';     // normal | intense | gentle | punishment
+var actionCount30s = 0;       // 30秒内动作计数
+var lastActionReset = 0;
+
+function checkBondageState() {
+    var state = {arms:false, legs:false, gag:false, blind:false, ear:false, collar:false, fullBond:false, count:0};
+    var items = Player.Appearance || [];
+    for (var i=0; i<items.length; i++) {
+        var name = (items[i].Asset && items[i].Asset.Name) || '';
+        for (var j=0; j<BONDAGE_PATTERNS.armBindings.length; j++) {
+            if (BONDAGE_PATTERNS.armBindings[j].test(name)) { state.arms = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.legBindings.length; j++) {
+            if (BONDAGE_PATTERNS.legBindings[j].test(name)) { state.legs = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.gagItems.length; j++) {
+            if (BONDAGE_PATTERNS.gagItems[j].test(name)) { state.gag = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.blindItems.length; j++) {
+            if (BONDAGE_PATTERNS.blindItems[j].test(name)) { state.blind = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.earItems.length; j++) {
+            if (BONDAGE_PATTERNS.earItems[j].test(name)) { state.ear = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.collarItems.length; j++) {
+            if (BONDAGE_PATTERNS.collarItems[j].test(name)) { state.collar = true; break; }
+        }
+        for (var j=0; j<BONDAGE_PATTERNS.fullBondage.length; j++) {
+            if (BONDAGE_PATTERNS.fullBondage[j].test(name)) { state.fullBond = true; break; }
+        }
+    }
+    state.count = (state.arms?1:0)+(state.legs?1:0)+(state.gag?1:0)+(state.blind?1:0)+(state.ear?1:0)+(state.collar?1:0);
+    // 感官剥夺倍率
+    sensoryMultiplier = 1.0 + (state.blind?0.5:0) + (state.ear?0.3:0) + (state.gag?0.2:0);
+    // 场景模式
+    var prevMode = sceneMode;
+    if (state.fullBond || state.count >= 5) sceneMode = 'intense';
+    else if (state.count >= 3) sceneMode = 'punishment';
+    else if (state.blind && state.ear) sceneMode = 'intense';
+    else sceneMode = 'normal';
+    if (prevMode !== sceneMode && prevMode !== 'normal' && sceneMode === 'normal') {
+        ChatRoomSendLocal('[🪢] 拘束解除，恢复正常模式', 5000);
+    }
+    bondageState = state;
+    updUI();
+}
+
+// 挣扎检测
+function checkStruggle(data) {
+    if (!data || !data.Content) return false;
+    var content = String(data.Content);
+    if (/Struggle|SlowLeaveAttempt|Escape|Wriggle/i.test(content)) {
+        var target = sDict(data, 'DestinationCharacter', 'MemberNumber');
+        if (target === Player.MemberNumber) {
+            var v = 30 + Math.floor(Math.random() * 40);
+            WS.sendFA('toyEvent', [['assetGroupName', 'ItemVulva'], ['level', Math.round(v/20)], ['itemName', 'Struggle']]);
+            curIntensity = v; toyMap['struggle'] = v;
+            addLog('Struggle', 'bondage', v, '');
+            ChatRoomSendLocal('[😫] 检测到挣扎! 强度 → '+v+'%', 5000);
+            updUI(); maybeBroadcast();
+            return true;
+        }
+    }
+    return false;
+}
+
+// 动作计数 (30秒窗口)
+function countAction() {
+    if (Date.now() - lastActionReset > 30000) { actionCount30s = 0; lastActionReset = Date.now(); }
+    actionCount30s++;
+    if (actionCount30s >= 10) {
+        var bonus = Math.min(actionCount30s * 3, 40);
+        curIntensity = Math.min(100, curIntensity + bonus);
+        updUI(); maybeBroadcast();
+        if (actionCount30s === 10) ChatRoomSendLocal('[📍] 高频动作检测! 强度自动提升', 5000);
+    }
+}
+
+// 面板换肤
+var panelTheme = 'red';
+const PANEL_THEMES = {
+    red:    {bg:'#18181e', border:'#c62828', title:'#1a1a22', accent:'#ff5252', name:'经典红黑'},
+    sakura: {bg:'#1f1518', border:'#e8879e', title:'#2a1a20', accent:'#f8bbd0', name:'樱花粉'},
+    night:  {bg:'#0d1117', border:'#58a6ff', title:'#161b22', accent:'#58a6ff', name:'暗夜蓝'},
+    forest: {bg:'#121c14', border:'#4caf50', title:'#1a241c', accent:'#81c784', name:'森林绿'},
+    royal:  {bg:'#15101f', border:'#7c4dff', title:'#1c1830', accent:'#b388ff', name:'皇家紫'},
+    gold:   {bg:'#1a1508', border:'#ffc107', title:'#241e10', accent:'#ffd54f', name:'鎏金黑'},
+};
+
+function applyTheme(th) {
+    panelTheme = th; var t = PANEL_THEMES[th] || PANEL_THEMES.red;
+    var p = document.getElementById('bcp-panel');
+    if (p) { p.style.background = t.bg; p.style.borderColor = t.border; }
+    var ti = document.getElementById('bcp-title');
+    if (ti) { ti.style.background = t.title; }
+    var dot = document.getElementById('bcp-dot');
+    if (dot) { dot.style.background = '#f44336'; dot.style.boxShadow = '0 0 6px #f44336'; }
+}
 
 function getZoneSens(slot){ var z=BODY_ZONES[slot]; return z?z.sens:50; }
 function getZoneColor(slot){ var z=BODY_ZONES[slot]; return z?z.color:'#888'; }
@@ -99,6 +211,9 @@ function calcZoneIntensity(slot, actionName){
     else if(/Kiss|Lick|Suck|Nibble/i.test(actionName)) actBonus=0;
     else if(/Caress|Pet|Cuddle|Massage/i.test(actionName)) actBonus=-5;
     var pct=Math.max(5,Math.min(100,base+actBonus));
+    // 感官剥夺倍率
+    pct = Math.round(pct * sensoryMultiplier);
+    pct = Math.max(5, Math.min(100, pct));
     // 缩放0-5到XToys level
     return {pct:pct, level:Math.round(pct/20)};
 }
@@ -360,6 +475,9 @@ function createUI(){
     '<div id="bcp-title" style="background:#1a1a22;padding:8px 10px;cursor:move;display:flex;align-items:center;gap:8px;border-bottom:1px solid #333;">'+
         '<span style="font-size:16px;">🎮</span><b style="color:#ff5252;">XToys 遥控</b>'+
         '<span id="bcp-dot" style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#f44336;box-shadow:0 0 6px #f44336;"></span>'+
+        '<select id="bcp-theme-sel" style="padding:1px;background:#111;border:1px solid #444;border-radius:3px;color:#ddd;font-size:7px;margin-right:2px;">'+
+            '<option value="red">红黑</option><option value="sakura">樱花</option><option value="night">暗夜</option>'+
+            '<option value="forest">森林</option><option value="royal">皇家</option><option value="gold">鎏金</option></select>'+
         '<button id="bcp-min" style="background:none;border:1px solid #555;color:#999;width:22px;height:22px;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;padding:0;">_</button></div>'+
     '<div id="bcp-body" style="padding:10px;">'+
         // Webhook
@@ -386,6 +504,12 @@ function createUI(){
             '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">远程控制</span><button id="bcp-remote" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
             '<div style="flex:1;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;color:#888;">状态广播</span><button id="bcp-bcast" style="padding:2px 8px;background:#2e7d32;border:none;border-radius:3px;color:#fff;font-size:9px;cursor:pointer;">开</button></div>'+
         '</div>'+
+        // 束缚状态
+        '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">'+
+                '<span style="font-size:10px;color:#ffab40;">🪢 拘束感知</span>'+
+                '<span id="bcp-bondage-status" style="font-size:9px;color:#888;">无束缚</span></div>'+
+            '<div id="bcp-bondage-bonus" style="font-size:8px;color:#666;">感度倍率: x1.0</div></div>'+
         // 配对控制
         '<div style="margin-bottom:8px;background:#111;border-radius:6px;padding:8px;border:1px solid #333;">'+
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
@@ -508,6 +632,11 @@ function createUI(){
 
     // 堆叠模式
     document.getElementById('bcp-zone-mode').onchange=function(){ zoneStackMode=this.value; recalcZoneStack(); curIntensity=Math.max(curIntensity,zoneStackTotal); updUI(); var s=loadS(); s.zoneStackMode=zoneStackMode; saveS(s); };
+    // 面板主题
+    document.getElementById('bcp-theme-sel').onchange=function(){ applyTheme(this.value); var s=loadS(); s.panelTheme=this.value; saveS(s); };
+    // 恢复主题
+    var s=loadS(); if(s.panelTheme) applyTheme(s.panelTheme);
+    var ts=document.getElementById('bcp-theme-sel'); if(ts && s.panelTheme) ts.value = s.panelTheme;
 
     // 配对按钮
     document.getElementById('bcp-pair-share').onclick=function(){ sharePairCode(); };
@@ -598,6 +727,21 @@ function updUI(){
             hm.innerHTML=h;
         }
         if(sv)sv.textContent=zoneStackTotal+'%';
+    }
+    // 束缚状态
+    var bs=document.getElementById('bcp-bondage-status');
+    if(bs){
+        if(bondageState.count>0){
+            var parts=[];
+            if(bondageState.arms)parts.push('手臂');
+            if(bondageState.legs)parts.push('腿');
+            if(bondageState.gag)parts.push('口球');
+            if(bondageState.blind)parts.push('眼罩');
+            if(bondageState.ear)parts.push('耳塞');
+            if(bondageState.collar)parts.push('项圈');
+            bs.textContent='束缚:'+parts.join('+')+' x'+sensoryMultiplier.toFixed(1);
+            bs.style.color=bondageState.count>=5?'#f44336':bondageState.count>=3?'#ff9800':'#ffc107';
+        } else { bs.textContent='无束缚'; bs.style.color='#888'; }
     }
     // 配对状态
     var ps=document.getElementById('bcp-pair-status');
@@ -790,7 +934,7 @@ function showHelp(topic){
     var h='';
     switch(topic){
         case 'main':
-            h='[🎮] BC XToys v3.0 帮助菜单\n'+
+            h='[🎮] BC XToys v4.0 帮助菜单\n'+
               '━━━━━━━━━━━━━━━━\n'+
               '/toy help basic   💡 基础命令\n'+
               '/toy help remote  🔓 远程控制 & 白名单\n'+
@@ -800,6 +944,9 @@ function showHelp(topic){
               '/toy help script  📜 剧本/定时模式\n'+
               '/toy help zone    🔥 身体区域 & 敏感度\n'+
               '/toy help auto    🤖 自动强度响应\n'+
+              '/toy help bondage 🪢 拘束检测 & 感度\n'+
+              '/toy help master  👑 主仆命令系统\n'+
+              '/toy help theme   🎨 面板换肤\n'+
               '━━━━━━━━━━━━━━━━\n'+
               '输入 /toy help <类别> 查看详情';
             break;
@@ -921,6 +1068,42 @@ function showHelp(topic){
               '/toy zone mode max|add|avg\n'+
               '  max=最高值 add=叠加 avg=平均\n\n'+
               '面板显示 🔥 身体活跃区热力图';
+            break;
+        case 'bondage':
+            h='[🪢] 拘束检测 & 场景感知\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '自动检测游戏中的拘束装备\n\n'+
+              '检测: 手臂捆绑/腿捆绑/口球/眼罩/耳塞/项圈/全身\n\n'+
+              '感官剥夺倍率:\n'+
+              '  眼罩+0.5x 耳塞+0.3x 口球+0.2x\n'+
+              '  例: 眼罩+口球 = x1.7 所有触碰增强\n\n'+
+              '场景自动切换:\n'+
+              '  5件+→激烈 3件+→惩罚 无→正常\n\n'+
+              '挣扎反馈: Struggle→30-70%脉冲\n'+
+              '动作计数: 30秒≥10次→强度自动提升\n'+
+              '/toy slave status 查看拘束状态';
+            break;
+        case 'master':
+            h='[👑] 主仆命令系统\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '主人命令:\n'+
+              '/toy master reward 🎁 轻柔正弦波\n'+
+              '/toy master punish ⚡ 强力方波60-100%\n'+
+              '/toy master edge   😈 挑逗边缘10-90%\n'+
+              '/toy master release🕊️ 释放归零\n\n'+
+              '奴命令:\n'+
+              '/toy slave beg     🙏 恳求\n'+
+              '/toy slave status  📊 拘束状态报告\n'+
+              '/toy slave obey <0-100> ⛓️ 服从强度';
+            break;
+        case 'theme':
+            h='[🎨] 面板换肤\n'+
+              '━━━━━━━━━━━━━━━━\n'+
+              '6套配色:\n'+
+              'red❤️经典 sakura🌸樱花 night🌙暗夜\n'+
+              'forest🌿森林 royal💜皇家 gold✨鎏金\n\n'+
+              '/toy theme <名> 切换\n'+
+              '面板标题栏下拉也可切换';
             break;
         case 'auto':
             h='[🤖] 自动强度响应\n'+
@@ -1065,6 +1248,36 @@ function handleChatCommands(data){
     // /toy timer <分钟> [强度] — 定时器
     if(sub==='timer'&&parts.length>=3){ var tm=parseInt(parts[2]), ti=parseInt(parts[3])||80; scriptTimer(Math.max(1,tm),Math.max(0,Math.min(100,ti))); return true; }
 
+    // /toy master — 主仆命令 (主人用)
+    if(sub==='master'||sub==='dom'){
+        if(parts.length<3){ ChatRoomSendLocal('[👑] 主仆命令:\n/toy master reward - 奖励轻柔波形\n/toy master punish - 惩罚强震\n/toy master edge - 边缘挑逗\n/toy master release - 释放归零',10000); return true; }
+        var cmd=parts[2].toLowerCase();
+        if(cmd==='reward'){ startWave('sine',5,25,3000); ChatRoomSendLocal('[👑] 主人奖励: 轻柔正弦波',5000); return true; }
+        if(cmd==='punish'){ startWave('square',60,100,1000); ChatRoomSendLocal('[👑] 主人惩罚: 强力方波',5000); return true; }
+        if(cmd==='edge'){ startWave('tease',10,90,4000); ChatRoomSendLocal('[👑] 主人边缘: 挑逗波形',5000); return true; }
+        if(cmd==='release'){ stopWave(); WS.sendFA('toyEvent',[['assetGroupName','ItemVulva'],['level',0],['itemName','MasterRelease']]); curIntensity=0; toyMap={}; addLog('Release','master',0,sourceName); ChatRoomSendLocal('[👑] 主人释放: 归零',5000); return true; }
+        return true;
+    }
+
+    // /toy slave — 奴的命令 (奴用)
+    if(sub==='slave'||sub==='sub'){
+        if(parts.length<3){ ChatRoomSendLocal('[⛓️] 奴的命令:\n/toy slave beg - 恳求\n/toy slave status - 报告当前拘束状态\n/toy slave obey <0-100> - 服从强度',10000); return true; }
+        var cmd=parts[2].toLowerCase();
+        if(cmd==='beg'){ ChatRoomSendLocal('[⛓️] '+sourceName+' 恳求主人的触碰...',8000); return true; }
+        if(cmd==='status'){ ChatRoomSendLocal('[⛓️] '+sourceName+' 的拘束状态:\n束缚件数: '+bondageState.count+' | 手臂:'+(bondageState.arms?'✅':'❌')+' 腿:'+(bondageState.legs?'✅':'❌')+' 口球:'+(bondageState.gag?'✅':'❌')+' 眼罩:'+(bondageState.blind?'✅':'❌')+' | 感度倍率: x'+sensoryMultiplier.toFixed(1)+' | 场景: '+sceneMode,10000); return true; }
+        if(cmd==='obey'&&parts.length>=4){ var v=Math.max(0,Math.min(100,parseInt(parts[3]))); handleRemoteCommand(sourceName,v); return true; }
+        return true;
+    }
+
+    // /toy theme — 面板换肤
+    if(sub==='theme'){
+        if(parts.length<3){ var tms=Object.keys(PANEL_THEMES).map(function(k){ return k+'='+PANEL_THEMES[k].name; }).join(', ');
+            ChatRoomSendLocal('[🎨] 面板主题:\n'+tms+'\n/toy theme <主题名> 切换',10000); return true; }
+        var th=parts[2].toLowerCase();
+        if(PANEL_THEMES[th]){ applyTheme(th); ChatRoomSendLocal('[🎨] 面板主题切换为: '+PANEL_THEMES[th].name,5000); return true; }
+        return true;
+    }
+
     // /toy zone — 身体区域控制
     if(sub==='zone'){
         if(parts.length<3){ ChatRoomSendLocal('[🔥] 身体区域:\n/toy zone list - 查看敏感度\n/toy zone mode max|add|avg - 堆叠模式\n活跃区: '+Object.keys(activeZones).map(function(k){return getZoneLabel(k)+' '+activeZones[k].intensity+'%';}).join(', '),15000); return true; }
@@ -1202,18 +1415,21 @@ async function main(){
     ServerSocket.on('ChatRoomMessage',async function(data){
         if(!data||!data.Content||!data.Type||IG_CT.has(data.Content)||IG_TP.has(data.Type))return;
         if(handleChatCommands(data))return;
+        if(checkStruggle(data))return;  // 挣扎检测
         hPortalLink(data);
         hActivities(data);
         hItemEquip(data);
         hToyEvents(data);
         hCustomTextItems(data);
+        // 动作计数 (仅对玩家)
+        if(data.Type==='Activity' && sDict(data,'TargetCharacter','MemberNumber')===Player.MemberNumber) countAction();
     });
 
     // ===== 游戏钩子 =====
     modApi.hookFunction('VibratorModePublish',3,function(args,next){ next(args); if(args[1]&&args[1].MemberNumber===Player.MemberNumber){ var slot=args[2]&&args[2].Asset&&args[2].Asset.DynamicGroupName; if(slot){ var asset=pBySlot(slot); if(asset)ItemState.updAll(asset); } } });
     modApi.hookFunction('ExtendedItemSetOption',7,function(args,next){ next(args); if(args.length>=6&&args[1]&&args[1].MemberNumber===Player.MemberNumber){ var item=args[2]; if(item&&item.Asset&&item.Asset.DynamicGroupName)ItemState.updAll(item); } });
-    modApi.hookFunction('InventoryWear',8,function(args,next){ var ret=next(args); if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pByName(args[1]); if(asset){ WS.sendFA('itemAdded',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.updAll(asset); } } return ret; });
-    modApi.hookFunction('InventoryRemove',3,function(args,next){ if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pBySlot(args[1]); if(asset){ WS.sendFA('itemRemoved',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.clearAll(args[1]); } } next(args); });
+    modApi.hookFunction('InventoryWear',8,function(args,next){ var ret=next(args); if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pByName(args[1]); if(asset){ WS.sendFA('itemAdded',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.updAll(asset); } setTimeout(checkBondageState, 500); } return ret; });
+    modApi.hookFunction('InventoryRemove',3,function(args,next){ if(args[0]&&args[0].MemberNumber===Player.MemberNumber){ var asset=pBySlot(args[1]); if(asset){ WS.sendFA('itemRemoved',[['assetName',asset.Asset.Name],['assetGroupName',asset.Asset.DynamicGroupName]]); ItemState.clearAll(args[1]); } setTimeout(checkBondageState, 500); } next(args); });
     modApi.hookFunction('PropertyShockPublishAction',3,function(args,next){ var si=null; if(Array.isArray(args)&&args[1]&&args[1].Property)si=args[1]; else if(typeof DialogFocusItem!=='undefined'&&DialogFocusItem&&DialogFocusItem.Property)si=DialogFocusItem; if(si){ var l=si.Property.ShockLevel; if(l===null||l===undefined)l=1; ItemState.sendSK(si.Asset&&si.Asset.DynamicGroupName,l,si.Asset&&si.Asset.Name); } next(args); });
 
     // 定时广播
